@@ -279,13 +279,13 @@ Promotion 原子化执行，并保留 previous_version，支持一键回退。�
 
 ### 9.2 Context Manager
 
-第 (t) 步发送给模型的 Context 定义为：
+第 t 步发送给模型的 Context：
 
-[
-C_t=f(T,P,H_t,K_t,O_t,E_t,S_t,B)
-]
+```text
+C_t = f(T, P, H_t, K_t, O_t, E_t, S_t, B)
+```
 
-其中 (T) 是 Task，(P) 是 Plan，(H_t) 是 History，(K_t) 是 Knowledge，(O_t) 是 Tool Observation，(E_t) 是 Evidence，(S_t) 是命中的 Skill，(B) 是 Token Budget。
+其中 T 是 Task，P 是 Plan，H_t 是 History，K_t 是 Knowledge，O_t 是 Tool Observation，E_t 是 Evidence，S_t 是命中的 Skill，B 是 Token Budget。
 
 Context Manager 在预算内选择当前决策需要的信息，不把全部历史无条件拼接。计划对比 Full History、Sliding Window、Retrieval Context 与 Retrieval + Compaction。
 
@@ -326,9 +326,9 @@ Complexity Router 将任务分为 Simple 与 Complex：
 
 ### 11.1 Outcome
 
-[
-SR=rac{N_{success}}{N_{total}}
-]
+```text
+SR = N_success / N_total
+```
 
 同时报告 Correctness、Completeness、Citation Correctness、Citation Coverage 与 Report Quality。
 
@@ -338,13 +338,10 @@ SR=rac{N_{success}}{N_{total}}
 
 ### 11.3 Skill Evolution
 
-[
-SHR=rac{N_{skill_used}}{N_{eligible}}
-]
-
-[
-SG=S_{with_skill}-S_{without_skill}
-]
+```text
+SHR = N_skill_used / N_eligible
+SG = S_with_skill - S_without_skill
+```
 
 另外记录 Candidate Acceptance Rate、Promotion Rate、Regression Rate、Rollback Count、Skill Usage 与版本间增益。
 
