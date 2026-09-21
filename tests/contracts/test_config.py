@@ -56,3 +56,10 @@ def test_run_config_rejects_uppercase_variant_and_extra_field():
         RunConfig(**make_config(variant="E0"))
     with pytest.raises(ValidationError):
         RunConfig(**make_config(extra_field="nope"))
+
+
+@pytest.mark.parametrize("field,value", [("random_seed", 43), ("temperature", 0.3), ("model_revision", "v2")])
+def test_config_hash_changes_when_hash_relevant_field_changes(field, value):
+    baseline = RunConfig(**make_config())
+    changed = RunConfig(**make_config(**{field: value}))
+    assert baseline.config_hash != changed.config_hash
