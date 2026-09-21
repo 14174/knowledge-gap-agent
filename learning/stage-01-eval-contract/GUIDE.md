@@ -4,6 +4,6 @@
 
 `model_dump(mode="json")` 只产生 JSON 兼容数据；`canonical_json` 才负责键排序、紧凑序列化和拒绝非有限值。`TraceEvent` 记录运行、任务、步骤、agent、事件类型、参数、观测引用、令牌用量、延迟、状态与配置哈希；失败必须带 `error_type`，成功不得带它。`BenchmarkCase` 用六类标签表达本地知识状态，并约束是否需要研究。
 
-代码导航：`src/knowledge_gap_agent/contracts/config.py`、`trace.py`、`benchmark.py`、`src/knowledge_gap_agent/utils/canonical.py`；演示入口为 `demo/01_config_trace.py`，测试在 `tests/contracts/` 与 `tests/demo/`。
+代码导航：`src/knowledge_gap_agent/utils/canonical.py`（`canonical_json`、`sha256_hex`）；`src/knowledge_gap_agent/contracts/config.py`（`RunConfig`、`ExperimentVariant`）；`src/knowledge_gap_agent/contracts/trace.py`（`TraceEvent`、`TokenUsage`、`EventType`、`EventStatus`）；`src/knowledge_gap_agent/contracts/benchmark.py`（`BenchmarkCase`、`CaseCategory`）。演示入口为 `demo/01_config_trace.py`，测试在 `tests/contracts/` 与 `tests/demo/`。
 
 成功观察是 `hash_stable=True`、合法 Trace JSON 中存在 `agent` 与 `usage.total_tokens`；失败观察是缺少 `error_type` 的失败事件被 `ValidationError` 拒绝。

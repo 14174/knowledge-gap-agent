@@ -304,15 +304,21 @@ Complexity Router 将任务分为 Simple 与 Complex：
 
 ```json
 {
+  "schema_version": "1.0",
   "run_id": "TBD",
   "task_id": "TBD",
   "step": 0,
   "agent": "researcher",
+  "event_type": "action_selected",
   "action": "web_search",
   "arguments": {},
   "observation_ref": "TBD",
-  "input_tokens": 0,
-  "output_tokens": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "context_tokens": 0,
+    "total_tokens": 0
+  },
   "latency_ms": 0,
   "status": "TBD",
   "error_type": null,
