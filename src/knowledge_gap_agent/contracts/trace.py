@@ -46,7 +46,7 @@ class TraceEvent(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     observation_ref: str | None = None
     usage: TokenUsage = Field(default_factory=TokenUsage)
-    latency_ms: float = Field(default=0, ge=0)
+    latency_ms: int = Field(default=0, ge=0)
     status: EventStatus
     error_type: str | None = None
     config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")

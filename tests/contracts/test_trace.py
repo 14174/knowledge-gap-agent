@@ -36,7 +36,9 @@ def test_trace_requires_non_empty_agent(agent):
         event(**values)
 
 
-@pytest.mark.parametrize("field,value", [("step", -1), ("latency_ms", -1)])
+@pytest.mark.parametrize("field,value", [("step", -1), ("latency_ms", -1),
+                                          ("latency_ms", float("inf")),
+                                          ("latency_ms", 1.5)])
 def test_trace_rejects_negative_values(field, value):
     with pytest.raises(ValidationError):
         event(**{field: value})
