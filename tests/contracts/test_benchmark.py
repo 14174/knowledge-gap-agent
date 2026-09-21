@@ -21,7 +21,7 @@ def test_valid_sufficient_case():
 @pytest.mark.parametrize("category", [CaseCategory.LOCAL_PARTIAL, CaseCategory.LOCAL_MISSING,
                                        CaseCategory.OUTDATED, CaseCategory.CONFLICT])
 def test_insufficient_categories_require_research(category):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match=category.value):
         case(category=category, need_research=False)
     assert case(category=category, need_research=True).need_research
 

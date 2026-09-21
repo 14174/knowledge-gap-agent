@@ -12,9 +12,12 @@ def event(**overrides):
 
 
 def test_trace_json_serializes_enum_and_total_tokens():
-    item = event(usage={"input_tokens": 3, "output_tokens": 4, "context_tokens": 2})
+    usage = TokenUsage(input_tokens=3, output_tokens=4, context_tokens=2)
+    assert usage.model_dump(mode="json")["total_tokens"] == 7
+    item = event(usage=usage)
     assert item.usage.total_tokens == 7
     assert '"event_type":"run_started"' in item.model_dump_json()
+    assert item.model_dump(mode="json")["usage"]["total_tokens"] == 7
 
 
 def test_failed_requires_error_type_and_success_forbids_it():
