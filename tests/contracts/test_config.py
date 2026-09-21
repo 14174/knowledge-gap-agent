@@ -7,7 +7,7 @@ from knowledge_gap_agent.contracts.config import ExperimentVariant, RunConfig
 def make_config(**overrides):
     data = {
         "experiment_id": "exp-1",
-        "variant": "E0",
+        "variant": "e0",
         "model_provider": "openai",
         "model_name": "gpt-test",
         "model_revision": "v1",
@@ -37,3 +37,22 @@ def test_run_config_hash_is_stable_and_instance_is_frozen():
 def test_run_config_rejects_invalid_values(field, value):
     with pytest.raises(ValidationError):
         RunConfig(**make_config(**{field: value}))
+
+
+@pytest.mark.parametrize("field", ["schema_version", "experiment_id", "model_provider", "model_name", "model_revision", "toolset_version", "dataset_version"])
+def test_run_config_rejects_empty_business_strings(field):
+    with pytest.raises(ValidationError):
+        RunConfig(**make_config(**{field: ""}))
+
+
+@pytest.mark.parametrize("field,value", [("temperature", 2.1), ("retry_limit", -1), ("temperature", float("inf")), ("prompt_hash", "z" * 64), ("corpus_hash", "x")])
+def test_run_config_rejects_invalid_constraints(field, value):
+    with pytest.raises(ValidationError):
+        RunConfig(**make_config(**{field: value}))
+
+
+def test_run_config_rejects_uppercase_variant_and_extra_field():
+    with pytest.raises(ValidationError):
+        RunConfig(**make_config(variant="E0"))
+    with pytest.raises(ValidationError):
+        RunConfig(**make_config(extra_field="nope"))
