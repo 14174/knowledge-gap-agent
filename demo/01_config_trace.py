@@ -25,17 +25,21 @@ def build_config() -> RunConfig:
     )
 
 
+def build_trace_event(config: RunConfig) -> TraceEvent:
+    return TraceEvent(
+        run_id="run-demo-001", task_id="task-demo-001", step=0,
+        agent="researcher", event_type=EventType.RUN_STARTED,
+        latency_ms=0, status=EventStatus.SUCCESS, config_hash=config.config_hash,
+    )
+
+
 def main() -> None:
     config = build_config()
     reordered = RunConfig(**dict(reversed(list(config.model_dump().items()))))
     print(f"config_hash={config.config_hash}")
     print(f"hash_stable={config.config_hash == reordered.config_hash}")
 
-    event = TraceEvent(
-        run_id="run-demo-001", task_id="task-demo-001", step=0,
-        agent="researcher", event_type=EventType.RUN_STARTED,
-        latency_ms=0, status=EventStatus.SUCCESS, config_hash=config.config_hash,
-    )
+    event = build_trace_event(config)
     print(event.model_dump_json(indent=2))
 
     try:
