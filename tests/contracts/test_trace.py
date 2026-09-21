@@ -26,7 +26,9 @@ def test_failed_requires_error_type_and_success_forbids_it():
 
 @pytest.mark.parametrize("agent", [None, ""])
 def test_trace_requires_non_empty_agent(agent):
-    values = {} if agent is None else {"agent": agent}
+    values = {"agent": agent}
+    if agent is None:
+        values = {"agent": None}
     with pytest.raises(ValidationError):
         event(**values)
 
