@@ -34,6 +34,7 @@ class TraceEvent(BaseModel):
     schema_version: str = Field(default="1.0", min_length=1)
     run_id: str = Field(min_length=1)
     task_id: str = Field(min_length=1)
+    agent: str = Field(min_length=1)
     step: int = Field(ge=0)
     event_type: EventType
     action: str | None = None

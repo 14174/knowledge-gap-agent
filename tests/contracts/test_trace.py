@@ -5,7 +5,7 @@ from knowledge_gap_agent.contracts.trace import EventStatus, EventType, TokenUsa
 
 
 def event(**overrides):
-    data = dict(run_id="r1", task_id="t1", step=0, event_type=EventType.RUN_STARTED,
+    data = dict(run_id="r1", task_id="t1", agent="a1", step=0, event_type=EventType.RUN_STARTED,
                 status=EventStatus.SUCCESS, config_hash="a" * 64)
     data.update(overrides)
     return TraceEvent(**data)
@@ -24,15 +24,26 @@ def test_failed_requires_error_type_and_success_forbids_it():
         event(error_type="Oops")
 
 
+@pytest.mark.parametrize("agent", [None, ""])
+def test_trace_requires_non_empty_agent(agent):
+    values = {} if agent is None else {"agent": agent}
+    with pytest.raises(ValidationError):
+        event(**values)
+
+
 @pytest.mark.parametrize("field,value", [("step", -1), ("latency_ms", -1)])
 def test_trace_rejects_negative_values(field, value):
     with pytest.raises(ValidationError):
         event(**{field: value})
 
 
-def test_token_usage_rejects_negative_values_and_trace_rejects_extra_fields():
+@pytest.mark.parametrize("field", ["input_tokens", "output_tokens", "context_tokens"])
+def test_token_usage_rejects_negative_values(field):
     with pytest.raises(ValidationError):
-        TokenUsage(input_tokens=-1)
+        TokenUsage(**{field: -1})
+
+
+def test_trace_rejects_extra_fields():
     with pytest.raises(ValidationError):
         event(unknown=1)
 

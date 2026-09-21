@@ -14,6 +14,7 @@ def case(**overrides):
 
 def test_valid_sufficient_case():
     assert case().category is CaseCategory.LOCAL_SUFFICIENT
+    assert case().local_knowledge_ids == []
     assert case(local_knowledge_ids=["k1"]).need_research is False
 
 
