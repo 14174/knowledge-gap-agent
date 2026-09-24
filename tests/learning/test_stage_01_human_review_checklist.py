@@ -17,6 +17,12 @@ BENCHMARK_FIXTURES = ROOT / "fixtures" / "benchmark"
 CORPUS_FIXTURES = ROOT / "fixtures" / "corpus"
 CHECKLIST = ROOT / "docs" / "阶段一人工终审清单.md"
 RENDERER = ROOT / "scripts" / "render_stage_01_human_review_checklist.py"
+DECISIONS = ROOT / "docs" / "decisions.md"
+AI_CODING_GUIDE = ROOT / "docs" / "AI_CODING_GUIDE.md"
+BENCHMARK_CONSTRUCTION = ROOT / "docs" / "benchmark-construction.md"
+EXPERIMENTS = ROOT / "docs" / "experiments.md"
+TODO = ROOT / "docs" / "TODO.md"
+PITFALLS = ROOT / "docs" / "pitfalls.md"
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -210,6 +216,7 @@ def test_checklist_keeps_human_fields_empty_and_current_release_gate_closed() ->
         assert card["human_review_status"] == "pending"
 
     # 当前阶段门禁：人工记录尚未产生，因此正式冻结文件和阶段标签都必须不存在。
+    assert not (BENCHMARK_FIXTURES / "human_reviews.jsonl").exists()
     assert not list(BENCHMARK_FIXTURES.glob("benchmark-v0.1.*.jsonl"))
     tags = subprocess.run(
         ["git", "tag", "--list", "learn-v0.1-eval-contract"],
@@ -414,3 +421,83 @@ def test_atomic_writer_cleans_temporary_file_and_preserves_existing_output(
         raise AssertionError("replace failure must escape")
     assert output.read_bytes() == b"sentinel\n"
     assert not list(tmp_path.glob(".checklist.md.*.tmp"))
+
+
+def test_decisions_record_trusted_human_gate_contract() -> None:
+    text = DECISIONS.read_text(encoding="utf-8")
+
+    for term in (
+        "HumanReviewRecord",
+        "review_target_hash",
+        "派生缓存",
+        "精确相等",
+        "候选冻结",
+    ):
+        assert term in text
+    assert "model_copy" in text
+
+
+def test_ai_coding_guide_records_safe_continuation_workflow() -> None:
+    text = AI_CODING_GUIDE.read_text(encoding="utf-8")
+
+    for term in (
+        "--workspace-root",
+        "HumanReviewRecord",
+        "HumanRevisionRecord",
+        "model_copy",
+        "规格审查",
+        "代码质量审查",
+        "正式冻结",
+        "阶段标签",
+    ):
+        assert term in text
+    assert "不得自动生成真人结论" in text
+    assert "不得让破坏性测试写入版本化 `fixtures/`" in text
+
+
+def test_benchmark_construction_records_strict_semantics_and_review_artifacts() -> None:
+    text = BENCHMARK_CONSTRUCTION.read_text(encoding="utf-8")
+
+    for term in (
+        "old.valid_until < current.valid_from",
+        "HumanReviewRecord",
+        "HumanRevisionRecord",
+        "--workspace-root <path>",
+        "render_stage_01_human_review_checklist.py",
+        "47 个去重证据块",
+    ):
+        assert term in text
+    assert "12 条 `outdated`" in text
+    assert "12 条 `conflict`" in text
+
+
+def test_pitfalls_only_record_two_reproduced_engineering_failures() -> None:
+    text = PITFALLS.read_text(encoding="utf-8")
+    issues = re.findall(r"(?m)^## (.+)$", text)
+
+    assert len(issues) == 2
+    assert any("夹具" in issue and "污染" in issue for issue in issues)
+    assert any("人工门禁" in issue and "绕过" in issue for issue in issues)
+    for subsection in ("复现条件", "影响", "根因", "回归测试", "禁止做法"):
+        assert text.count(f"### {subsection}") == 2
+
+
+def test_todo_keeps_day2_and_real_human_review_open() -> None:
+    text = TODO.read_text(encoding="utf-8")
+
+    assert re.search(r"(?m)^- \[ \] 第 1–2 天：", text)
+    assert re.search(r"(?m)^  - \[ \] 第 2 天：", text)
+    assert re.search(
+        r"(?m)^    - \[ \] .*12 条 `outdated`.*12 条 `conflict`", text
+    )
+    assert re.search(r"(?m)^    - \[x\] 完成可信人工门禁工程修复", text)
+    assert re.search(r"(?m)^    - \[x\] 已交付\[阶段一人工终审清单\]", text)
+
+
+def test_experiment_record_uses_current_command_and_keeps_gate_pending() -> None:
+    text = EXPERIMENTS.read_text(encoding="utf-8")
+
+    assert "uv run python -m pytest -q" in text
+    assert "2026-09-25" in text
+    assert re.search(r"全量测试[^\n]*`\d+ passed, \d+ skipped`", text)
+    assert "24 条高风险候选仍为人工 `pending`" in text

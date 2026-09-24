@@ -2,7 +2,7 @@
 
 ## 1. 范围与状态
 
-本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`；质量审计把实际修订范围扩为 base-02、base-08 共 8 条，第二轮对这 8 条全部 `approve`。当前 `reviews.jsonl` 由首轮未变化的 40 条与第二轮 8 条真实记录合并，最终 48 条模型复核均为 `approve`；24 条高风险类别进入 `human_review_queue.jsonl`，仍待真实人工审核。`change_log.jsonl` 仍只有两组非人工修订；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
+本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`；质量审计把实际修订范围扩为 base-02、base-08 共 8 条，第二轮对这 8 条全部 `approve`。当前 `reviews.jsonl` 由首轮未变化的 40 条与第二轮 8 条真实记录合并，最终 48 条模型复核均为 `approve`；24 条高风险类别进入 `human_review_queue.jsonl`，其中 12 条 `outdated`、12 条 `conflict`，仍待真实人工审核。终审清单含 24 张结构化卡片和 47 个去重证据块。`change_log.jsonl` 仍只有两组非人工修订；尚未生成 `human_reviews.jsonl`、正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
 
 构建时间统一固定为 `2026-09-24T00:00:00+08:00`。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
 
@@ -103,7 +103,8 @@
 - 三个环境池两两互斥，所有引用存在；
 - 每条必需主张都有 case 证据，主张与块的引用双向一致；
 - `local_partial` 的缺失集合是非空真子集，且缺失证据只在研究池；
-- 过时与冲突环境满足现有时效和冲突边定义；
+- `outdated` 必须由同一对直接冲突主张证明：旧主张在可见池，当前必需主张在研究池，两端时间非空且严格满足 `old.valid_until < current.valid_from`；
+- `conflict` 必须有可见池中的直接冲突对，并由研究池中的同一条必需主张同时直接关联两端；
 - `allowed_source_ids` 覆盖所有 case 证据来源；
 - case 与 environment 使用内容派生的 16 位十六进制不透明编号，不含环境类别或研究提示；
 - 四类环境的可见池、研究池、排除池和可见受控块数量分布完全相同，奇偶主题交替缺失 `C1` 与 `C2`，基于编号后缀、池大小、受控块数量或固定缺失位置的朴素规则不能完整恢复类别；
@@ -140,7 +141,28 @@
 
 当前 `reviews.jsonl` 不是任意一组结构合法、目标哈希匹配的 ReviewRecord，而是唯一的归档合并：修订 8 条必须逐对象取第二轮原记录，其余 40 条必须逐对象取首轮原记录，再按 `case_id` 排序并写成规范 JSONL。构建器现场校验两份提示词原始字节哈希，从两轮归档加载记录并重建预期字节；非空 `reviews.jsonl` 只有与该预期逐字节一致时才进入 `apply_review_gate`。因此提示词身份、模型身份、复核时间、结论、置信度、环境内证据引用、顺序或 JSON 格式任一漂移都会在写盘前拒绝。若 reviews 为空，则草稿保持 `pending` 且人工队列为空。
 
-Reviewer 完成后，所有 `outdated` 和 `conflict` 样本、置信度低于 `0.8` 的样本、`revise`、`reject` 或曾经规则失败的样本都必须进入人工审核。自动阶段只能把人工状态改为 `pending` 或 `not_required`，不得写入人工 `approved`。人工修改必须追加到 `change_log.jsonl`，不得覆盖旧记录。
+Reviewer 完成后，所有 `outdated` 和 `conflict` 样本、置信度低于 `0.8` 的样本、`revise`、`reject` 或曾经规则失败的样本都必须进入人工审核。自动阶段只能把人工状态改为 `pending` 或 `not_required`，不得写入人工 `approved`。人工要求被实际应用后，必须把 `HumanRevisionRecord` 追加到 `change_log.jsonl`，不得覆盖旧记录。
+
+### 7.3 人工记录与冻结
+
+人工审核和内容修订使用不同记录：
+
+- `HumanReviewRecord` 保存 `case_id`、当前 `review_target_hash`、结论、审核者、理由、时间和修改要求。它是正式冻结接受人工批准的唯一依据。
+- `HumanRevisionRecord` 保存人工 `revise` 被应用后的前后目标哈希与改动摘要。它只证明内容变化，不表示批准。
+
+候选冻结不消费人工记录。它从可信模型记录和升级规则派生 `review_status`、`human_review_status`，收到非空人工记录时直接拒绝。正式冻结重新构造 Reviewer 可见输入，重算 `review_target_hash` 与必审集合，并要求人工记录 case 集合精确相等。缺失、重复、额外、陈旧、`revise` 或 `rejected` 都在写盘前拒绝。case 上的状态字段只是派生缓存，不能授权正式冻结。
+
+正式审计行保存完整 `HumanReviewRecord`；runtime 与 labels 不增加人工字段。人工 `revise` 改变内容后，旧记录因目标哈希变化而失效，必须重新执行数据校验、模型复核和人工终审。
+
+### 7.4 人工终审清单
+
+清单由可信夹具确定性渲染，不是批准来源。当前清单精确覆盖 24 条高风险候选，即 12 条 `outdated` 与 12 条 `conflict`。每张卡片保留三池有序编号、问题、答案键、必需与缺失主张、环境哈希、目标哈希和完整模型复核。47 个去重证据块统一放在证据目录，每块包含来源、标题路径、行号、正文和关联主张。
+
+```powershell
+uv run python scripts/render_stage_01_human_review_checklist.py --workspace-root <path>
+```
+
+渲染器只读取候选夹具，不读取或创建 `human_reviews.jsonl`。卡片中的人工字段保持为空；真实结论另行保存为 `HumanReviewRecord`。
 
 ## 8. 重建与哈希
 
@@ -153,7 +175,7 @@ uv run python scripts/build_day2_fixtures.py --seed-source-root <固定只读克
 此后离线重建与验证：
 
 ```powershell
-uv run python scripts/build_day2_fixtures.py
+uv run python scripts/build_day2_fixtures.py --workspace-root <path>
 uv run python -m pytest tests/benchmark/test_fixture_dataset.py -v
 Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl,fixtures/benchmark/reviews.jsonl,fixtures/benchmark/human_review_queue.jsonl,fixtures/benchmark/change_log.jsonl,fixtures/benchmark/review_history/round-1-inputs.jsonl,fixtures/benchmark/review_history/round-1-reviews.jsonl,fixtures/benchmark/review_history/round-2-inputs.jsonl,fixtures/benchmark/review_history/round-2-reviews.jsonl
 ```

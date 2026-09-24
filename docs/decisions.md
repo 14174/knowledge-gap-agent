@@ -92,3 +92,28 @@ Pydantic 的 `frozen=True` 只阻止字段重新赋值，不能阻止 `list.appe
 - 当前 48 条模型复核均为 `approve`，但 24 条 `outdated`、`conflict` 仍为人工 `pending`。
 - 模型复核完成不等于正式冻结；人工状态未完成前不得生成正式发布数据或结果数字。
 - 当前 reviews 的每条模型、提示词版本、哈希和时间均保持其真实来源，不做跨轮统一填充。
+
+## 2026-09-25：正式冻结只接受绑定当前目标的人工记录
+
+### 背景
+
+正式冻结原先只检查 `BenchmarkCase.human_review_status`。Pydantic 的 `model_copy()` 不重新校验字段，调用方可以把高风险 case 的缓存状态改成 `approved`，却不提供人工审核者、理由、时间和审核目标。状态值不能证明真实人工审核发生过。
+
+破坏性夹具测试还曾直接改写版本化 `fixtures/`，再在 `finally` 中恢复。并行读取者仍会看到临时的损坏内容，恢复文件不能消除这段污染窗口。
+
+### 决策
+
+- 正式冻结只把 `HumanReviewRecord` 作为人工结论来源。每条记录包含审核者、理由、带时区的时间和当前 `review_target_hash`。
+- 正式冻结用可信 case、environment、chunks 和 claims 重算模型门禁与人工需求。`human_review_status` 只是派生缓存，不能授权冻结。
+- 人工记录的 case 集合必须与当前必审集合精确相等。缺失、重复、额外、陈旧以及 `revise/rejected` 结论均在写盘前拒绝。
+- 候选冻结不消费人工结论，并拒绝非空人工记录。它只派生 `pending/not_required`。
+- `HumanRevisionRecord` 只记录人工 `revise` 被实际应用后的内容变化。它不表示批准，也不能替代新目标上的模型复核与人工终审。
+- 任何通过 `model_copy()`、`model_construct()` 或外部反序列化进入公共边界的模型，都先执行 `model_dump(mode="python")`，再用对应 Pydantic 模型重新验证。
+- 夹具构建脚本使用显式 `--workspace-root`。破坏性测试只能在 `tmp_path` 的夹具副本运行，并在每条测试后核对版本化夹具哈希。
+
+### 影响
+
+- 手填 `human_review_status=approved` 不再能绕过正式冻结。
+- 内容变化会改变 `review_target_hash`，旧人工记录自动失效。
+- 人工记录只进入审计集，不进入 runtime 或 labels。
+- 当前 24 条高风险候选仍为 `pending`。仓库不创建 `human_reviews.jsonl`、正式冻结文件或阶段标签，直到真实人工审核完成。

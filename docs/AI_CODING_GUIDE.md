@@ -127,6 +127,16 @@ audit.jsonl                 → 来源、复核、人工结论和构造记录
 
 冻结运行文件是评测器信封，不得原样传给决策模型。评测器先用其中的编号关联环境和语料，再调用独立字段白名单构造模型输入；模型不得接收任何样本、基础问题、环境或块编号，也不得接收类别、研究决策、必需或缺失主张等标签信息。模型输入公共入口先通过 `model_validate(model_dump(mode="python"))` 重验 case、environment 和每个 chunk，再校验 case 与 environment 配对，禁止不校验的复制对象绕过哈希和必填字段约束。两层载荷都不得采用“先序列化完整对象再删除几个字段”的黑名单方式。新增 Benchmark 字段时必须检查 `LABEL_FIELDS`、冻结输出、模型输入白名单和泄漏测试。
 
+### 4.5 人工结论与修订记录
+
+`ReviewRecord`、`HumanReviewRecord`、`HumanRevisionRecord` 是三个独立契约：
+
+- `ReviewRecord` 保存模型复核，不表示人工批准。
+- `HumanReviewRecord` 保存真人对当前 `review_target_hash` 的结论。正式冻结只接受集合精确、目标未过期且结论为 `approved` 的记录。
+- `HumanRevisionRecord` 保存人工要求被实际应用后的前后哈希与摘要。它不批准修改后的内容。
+
+`BenchmarkCase.human_review_status` 是派生缓存。不得用 `model_copy()` 把它改成 `approved` 来代替 `HumanReviewRecord`，也不得自动生成真人结论。公共边界必须把传入模型转为 Python 数据后重新验证，不能信任 `model_copy()` 或 `model_construct()` 的结果。
+
 ## 5. 开发流程
 
 ### 5.1 设计门禁
@@ -175,6 +185,19 @@ test(基准): 覆盖人工升级状态边界
 ```
 
 提交前运行目标测试、全量测试和 `git diff --check`。不要把工作树中的无关改动一并加入暂存区。
+
+### 5.5 可信基准改动顺序
+
+后续 Codex 修改基准或人工门禁时，按以下顺序工作：
+
+1. 读取 `AGENTS.md`、`docs/TODO.md`、相关设计书、`docs/decisions.md` 和相邻测试。
+2. 将 `fixtures/` 复制到临时工作区，并通过 `--workspace-root <path>` 运行构建器。不得让破坏性测试写入版本化 `fixtures/`。
+3. 先写测试并观察预期红灯，再做最小实现。所有外部模型对象在模块边界重新验证。
+4. 先做规格审查，通过后再做代码质量审查。实现者、规格审查者和质量审查者不能混为同一角色。
+5. 每个提交只包含一个可验证目的。提交前运行定向测试、相邻回归、全量测试、`uv lock --check` 和 `git diff --check`。
+6. 只有人工记录覆盖当前必审集合、全部绑定当前哈希且结论为 `approved`，正式冻结和发布验证才可运行。验证通过后才能创建阶段标签。
+
+模型 `approve`、清单中的空字段或手填 case 状态都不能代替第 6 步。人工 `revise` 后要追加 `HumanRevisionRecord`，重建目标哈希，重新执行模型复核和人工终审。
 
 ## 6. 测试策略
 
@@ -251,6 +274,8 @@ review record
 - 过时、冲突、低置信度、`revise`、`reject` 和历史规则失败样本必须进入人工审核。
 - 人工 `rejected` 的样本不能进入候选或正式冻结集。
 - 正式冻结重新计算门禁，不信任调用方手填的状态字段。
+- 正式冻结只从 `HumanReviewRecord` 派生人工终态；人工记录集合必须与当前必审 case 集合精确相等，并逐条匹配当前 `review_target_hash`。
+- 候选冻结拒绝非空人工记录。它不能消费或忽略安全相关输入。
 - 应用复核门禁和冻结前都用当前可信语料重新验证目标哈希；错误哈希不得冻结。
 
 搜索是否必要只是一个标签，不是 Harness 有效性的最终证据。实验还要报告任务结果、缺口识别、成本和轨迹指标。

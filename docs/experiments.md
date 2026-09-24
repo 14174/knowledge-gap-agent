@@ -42,3 +42,32 @@ Reviewer 原样输出为 42 条 `approve`、6 条 `revise`。6 条 `revise` 均�
 ### 状态与限制
 
 上述数字仅描述固定候选集的复核流程，不是 Runtime 性能、成本收益或简历结果数字。当前 24 条高风险候选仍未获得人工批准，`change_log.jsonl` 未追加人工结论，也未生成正式 `runtime`、`labels`、`audit` 或冻结基准。
+
+## 2026-09-25：阶段一自动验收与人工门禁交接
+
+### 自动验收记录
+
+阶段一可信人工门禁修复完成代码与清单实现后，按以下命令分层验证：
+
+```powershell
+uv run python -m pytest tests/benchmark/test_human_review_models.py tests/corpus/test_models.py -q
+uv run python -m pytest tests/benchmark/test_validation.py tests/benchmark/test_freeze.py -q
+uv run python -m pytest tests/benchmark/test_fixture_dataset.py -q
+uv run python -m pytest tests/learning -q
+uv run python demo/01_config_trace.py
+uv run python demo/02_bm25_retrieval.py
+uv lock --check
+git diff --check
+git diff -- fixtures
+uv run python -m pytest -q
+```
+
+2026-09-25 最终分层验收后的全量测试结果为 `614 passed, 1 skipped`，耗时 `134.33s`。跳过项是 Windows 符号链接权限相关的条件跳过。测试代码不固定这个动态总数；后续测试集合变化时，以最新一次真实命令输出更新本段。
+
+两项 Demo 已实际运行并正常退出。`uv lock --check`、`git diff --check` 通过，`git diff -- fixtures` 无输出。破坏性夹具测试均在显式 `--workspace-root` 的临时副本运行。
+
+### 人工门禁状态
+
+已交付[阶段一人工终审清单](阶段一人工终审清单.md)。24 条高风险候选仍为人工 `pending`，其中 `outdated` 与 `conflict` 各 12 条。清单含 47 个去重证据块，所有人工结论字段为空。
+
+模型复核的 48 条 `approve` 不能替代真实人工批准。当前仓库没有 `human_reviews.jsonl`、正式冻结文件或 `learn-v0.1-eval-contract` 标签。必须先完成 24 条真实人工审核，再由正式冻结器校验 `HumanReviewRecord` 的精确集合、当前目标哈希和结论。
