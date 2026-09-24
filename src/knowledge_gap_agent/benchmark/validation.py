@@ -24,6 +24,57 @@ def _sorted_issues(issues: Iterable[ValidationIssue]) -> tuple[ValidationIssue, 
     )))
 
 
+def _conflict_neighbors(
+    claims_by_id: Mapping[str, Claim],
+) -> dict[str, frozenset[str]]:
+    known_ids = set(claims_by_id)
+    mutable_neighbors = {claim_id: set() for claim_id in known_ids}
+    for claim_id, claim in claims_by_id.items():
+        for conflict_id in claim.conflicts_with:
+            if conflict_id == claim_id or conflict_id not in known_ids:
+                continue
+            mutable_neighbors[claim_id].add(conflict_id)
+            mutable_neighbors[conflict_id].add(claim_id)
+    return {
+        claim_id: frozenset(neighbors)
+        for claim_id, neighbors in mutable_neighbors.items()
+    }
+
+
+def _has_adjudicated_visible_conflict(
+    visible_claim_ids: set[str],
+    research_required_ids: set[str],
+    conflict_neighbors: Mapping[str, frozenset[str]],
+) -> bool:
+    ordered_visible = tuple(sorted(visible_claim_ids))
+    research_bits = {
+        claim_id: 1 << index
+        for index, claim_id in enumerate(sorted(research_required_ids))
+    }
+    research_neighbor_masks: dict[str, int] = {}
+    for visible_id in ordered_visible:
+        mask = 0
+        for neighbor_id in conflict_neighbors[visible_id]:
+            if neighbor_id != visible_id:
+                mask |= research_bits.get(neighbor_id, 0)
+        research_neighbor_masks[visible_id] = mask
+    for left_index, left_id in enumerate(ordered_visible):
+        for right_index in range(left_index + 1, len(ordered_visible)):
+            right_id = ordered_visible[right_index]
+            if right_id not in conflict_neighbors[left_id]:
+                continue
+            endpoint_mask = research_bits.get(left_id, 0) | research_bits.get(
+                right_id, 0
+            )
+            if (
+                research_neighbor_masks[left_id]
+                & research_neighbor_masks[right_id]
+                & ~endpoint_mask
+            ):
+                return True
+    return False
+
+
 def validate_case(
     case: BenchmarkCase,
     environment: KnowledgeEnvironment,
@@ -123,31 +174,37 @@ def validate_case(
             issues.append(_issue("known_claim_not_visible", case.case_id,
                                  "non-missing required claim lacks visible support", claim_id))
     elif case.category.value == "outdated":
+        visible_known = visible_claims & claims_by_id.keys()
+        research_required = required_claims & research_claims & claims_by_id.keys()
+        conflict_neighbors = _conflict_neighbors(claims_by_id)
         has_outdated_evidence = any(
-            old_claim_id in claims_by_id
-            and claims_by_id[old_claim_id].valid_until is not None
-            and any(
-                current_id in research_claims
-                and (
-                    current_id in claims_by_id[old_claim_id].conflicts_with
-                    or old_claim_id in claims_by_id[current_id].conflicts_with
-                )
-                for current_id in required_claims if current_id in claims_by_id
+            old_id != current_id
+            and claims_by_id[old_id].valid_until is not None
+            and claims_by_id[old_id].valid_until.tzinfo is not None
+            and claims_by_id[old_id].valid_until.utcoffset() is not None
+            and claims_by_id[current_id].valid_from is not None
+            and claims_by_id[current_id].valid_from.tzinfo is not None
+            and claims_by_id[current_id].valid_from.utcoffset() is not None
+            and (
+                claims_by_id[old_id].valid_until
+                < claims_by_id[current_id].valid_from
             )
-            for old_claim_id in visible_claims
+            for old_id in visible_known
+            for current_id in conflict_neighbors[old_id] & research_required
         )
         if not has_outdated_evidence:
             issues.append(_issue("outdated_evidence_missing", case.case_id,
                                  "outdated case lacks expired visible conflict and research update"))
     elif case.category.value == "conflict":
         visible_known = visible_claims & claims_by_id.keys()
-        has_visible_conflict = any(
-            right in visible_known
-            and (right in claims_by_id[left].conflicts_with
-                 or left in claims_by_id[right].conflicts_with)
-            for left in visible_known for right in visible_known if left != right
+        research_required = required_claims & research_claims & claims_by_id.keys()
+        conflict_neighbors = _conflict_neighbors(claims_by_id)
+        has_adjudicated_conflict = _has_adjudicated_visible_conflict(
+            visible_known,
+            research_required,
+            conflict_neighbors,
         )
-        if not has_visible_conflict or not (required_claims & research_claims):
+        if not has_adjudicated_conflict:
             issues.append(_issue("conflict_evidence_missing", case.case_id,
                                  "conflict case lacks visible conflict or research adjudication"))
     return _sorted_issues(issues)

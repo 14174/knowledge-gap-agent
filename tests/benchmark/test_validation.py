@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
+from time import perf_counter
 
 import pytest
 from pydantic import ValidationError
 
+import knowledge_gap_agent.benchmark.validation as validation_module
 from knowledge_gap_agent.benchmark import (
     LABEL_FIELDS,
     KnowledgeEnvironment,
@@ -67,6 +69,53 @@ def valid_data():
         make_chunk("excluded", ()),
     )}
     return make_case(category="local_missing"), environment, chunks, {"claim1": make_claim()}
+
+
+def outdated_data(
+    *,
+    old_until: datetime | None,
+    current_from: datetime | None,
+    old_conflicts: tuple[str, ...] = ("claim1",),
+    current_conflicts: tuple[str, ...] = ("old",),
+):
+    _, environment, chunks, claims = valid_data()
+    target = make_case(category="outdated")
+    chunks["visible"] = chunks["visible"].model_copy(update={"claim_ids": ("old",)})
+    claims["old"] = make_claim().model_copy(update={
+        "claim_id": "old",
+        "evidence_chunk_ids": ("visible",),
+        "valid_from": None,
+        "valid_until": old_until,
+        "conflicts_with": old_conflicts,
+    })
+    claims["claim1"] = claims["claim1"].model_copy(update={
+        "valid_from": current_from,
+        "valid_until": None,
+        "conflicts_with": current_conflicts,
+    })
+    return target, environment, chunks, claims
+
+
+def conflict_data(adjudicator_conflicts: tuple[str, ...]):
+    _, environment, chunks, claims = valid_data()
+    target = make_case(category="conflict")
+    chunks["visible"] = chunks["visible"].model_copy(
+        update={"claim_ids": ("left", "right")}
+    )
+    claims["left"] = make_claim().model_copy(update={
+        "claim_id": "left",
+        "evidence_chunk_ids": ("visible",),
+        "conflicts_with": ("right",),
+    })
+    claims["right"] = make_claim().model_copy(update={
+        "claim_id": "right",
+        "evidence_chunk_ids": ("visible",),
+        "conflicts_with": ("left",),
+    })
+    claims["claim1"] = claims["claim1"].model_copy(
+        update={"conflicts_with": adjudicator_conflicts}
+    )
+    return target, environment, chunks, claims
 
 
 def test_environment_rejects_overlap_duplicate_and_bad_hash():
@@ -231,43 +280,418 @@ def test_local_missing_requires_all_required_claims_missing(missing_ids):
     }
 
 
-def test_outdated_requires_expired_visible_conflict_and_research_current_claim():
-    case, environment, chunks, claims = valid_data()
-    outdated = make_case(category="outdated")
-    assert "outdated_evidence_missing" in {
-        issue.code for issue in validate_case(outdated, environment, chunks, claims)
-    }
-    chunks["visible"] = chunks["visible"].model_copy(update={"claim_ids": ("old",)})
-    claims["old"] = make_claim().model_copy(update={
-        "claim_id": "old", "evidence_chunk_ids": ("visible",),
-        "valid_until": datetime(2025, 1, 1, tzinfo=timezone.utc),
+@pytest.mark.parametrize(
+    "old_until,current_from",
+    [
+        (None, datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        (datetime(2026, 1, 1, tzinfo=timezone.utc), None),
+        (
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
+        ),
+        (
+            datetime(2026, 1, 3, tzinfo=timezone.utc),
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
+        ),
+        (datetime(2026, 1, 1), datetime(2026, 1, 2, tzinfo=timezone.utc)),
+        (datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2)),
+    ],
+)
+def test_outdated_requires_strict_timezone_aware_temporal_handoff(
+    old_until: datetime | None,
+    current_from: datetime | None,
+) -> None:
+    target, environment, chunks, claims = outdated_data(
+        old_until=old_until,
+        current_from=current_from,
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" in codes
+
+
+def test_outdated_requires_direct_conflict_with_research_current_claim() -> None:
+    target, environment, chunks, claims = outdated_data(
+        old_until=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        current_from=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        old_conflicts=(),
+        current_conflicts=(),
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" in codes
+
+
+def test_outdated_accepts_direct_conflict_with_strict_temporal_handoff() -> None:
+    target, environment, chunks, claims = outdated_data(
+        old_until=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        current_from=datetime(2030, 1, 2, tzinfo=timezone.utc),
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" not in codes
+
+
+def test_outdated_rejects_self_conflict_reusing_one_claim_for_both_roles() -> None:
+    _, environment, chunks, claims = valid_data()
+    target = make_case(category="outdated")
+    chunks["visible"] = chunks["visible"].model_copy(
+        update={"claim_ids": ("claim1",)}
+    )
+    claims["claim1"] = claims["claim1"].model_copy(update={
+        "evidence_chunk_ids": ("visible", "evidence"),
+        "valid_from": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        "valid_until": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "conflicts_with": ("claim1",),
     })
-    assert "outdated_evidence_missing" not in {
-        issue.code for issue in validate_case(outdated, environment, chunks, claims)
-    }
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" in codes
 
 
-def test_conflict_requires_visible_conflict_pair_and_research_adjudication():
-    case, environment, chunks, claims = valid_data()
-    conflict = make_case(category="conflict")
-    assert "conflict_evidence_missing" in {
-        issue.code for issue in validate_case(conflict, environment, chunks, claims)
-    }
-    chunks["visible"] = chunks["visible"].model_copy(update={"claim_ids": ("left", "right")})
-    claims.update({
+def test_outdated_requires_time_and_conflict_on_the_same_claim_pair() -> None:
+    target, environment, chunks, claims = outdated_data(
+        old_until=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        current_from=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        old_conflicts=(),
+        current_conflicts=("old-without-time",),
+    )
+    chunks["visible"] = chunks["visible"].model_copy(
+        update={"claim_ids": ("old", "old-without-time")}
+    )
+    claims["old-without-time"] = claims["old"].model_copy(update={
+        "claim_id": "old-without-time",
+        "valid_until": None,
+        "conflicts_with": ("claim1",),
+    })
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" in codes
+
+
+@pytest.mark.parametrize(
+    "old_conflicts,current_conflicts",
+    [(("claim1",), ()), ((), ("old",))],
+)
+def test_outdated_accepts_one_way_conflict_in_either_direction(
+    old_conflicts: tuple[str, ...],
+    current_conflicts: tuple[str, ...],
+) -> None:
+    target, environment, chunks, claims = outdated_data(
+        old_until=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        current_from=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        old_conflicts=old_conflicts,
+        current_conflicts=current_conflicts,
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "outdated_evidence_missing" not in codes
+
+
+def test_conflict_adjudicator_must_link_both_visible_sides() -> None:
+    target, environment, chunks, claims = conflict_data(
+        adjudicator_conflicts=("left",)
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" in codes
+
+
+def test_conflict_accepts_adjudicator_linked_to_both_visible_sides() -> None:
+    target, environment, chunks, claims = conflict_data(
+        adjudicator_conflicts=("left", "right")
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" not in codes
+
+
+def test_conflict_rejects_visible_endpoint_reused_as_adjudicator() -> None:
+    _, environment, chunks, claims = valid_data()
+    target = make_case(
+        category="conflict",
+        required_claim_ids=["left"],
+        missing_claim_ids=["left"],
+    )
+    chunks["visible"] = chunks["visible"].model_copy(
+        update={"claim_ids": ("left", "right")}
+    )
+    chunks["evidence"] = chunks["evidence"].model_copy(
+        update={"claim_ids": ("left",)}
+    )
+    claims = {
         "left": make_claim().model_copy(update={
-            "claim_id": "left", "evidence_chunk_ids": ("visible",),
-            "conflicts_with": ("right",),
+            "claim_id": "left",
+            "evidence_chunk_ids": ("visible", "evidence"),
+            "conflicts_with": ("left", "right"),
         }),
         "right": make_claim().model_copy(update={
-            "claim_id": "right", "evidence_chunk_ids": ("visible",),
+            "claim_id": "right",
+            "evidence_chunk_ids": ("visible",),
+            "conflicts_with": ("left",),
+        }),
+    }
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" in codes
+
+
+def test_conflict_rejects_two_adjudicators_each_linking_only_one_side() -> None:
+    target, environment, chunks, claims = conflict_data(adjudicator_conflicts=())
+    target = target.model_copy(update={
+        "required_claim_ids": ("adjudicator-left", "adjudicator-right"),
+        "missing_claim_ids": ("adjudicator-left", "adjudicator-right"),
+    })
+    chunks["evidence"] = chunks["evidence"].model_copy(
+        update={"claim_ids": ("adjudicator-left", "adjudicator-right")}
+    )
+    del claims["claim1"]
+    claims["adjudicator-left"] = make_claim().model_copy(update={
+        "claim_id": "adjudicator-left",
+        "conflicts_with": ("left",),
+    })
+    claims["adjudicator-right"] = make_claim().model_copy(update={
+        "claim_id": "adjudicator-right",
+        "conflicts_with": ("right",),
+    })
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" in codes
+
+
+@pytest.mark.parametrize("reverse_edges", [False, True])
+def test_conflict_accepts_one_way_edges_in_either_direction(
+    reverse_edges: bool,
+) -> None:
+    target, environment, chunks, claims = conflict_data(
+        adjudicator_conflicts=("left", "right")
+    )
+    if reverse_edges:
+        claims["left"] = claims["left"].model_copy(
+            update={"conflicts_with": ("claim1",)}
+        )
+        claims["right"] = claims["right"].model_copy(
+            update={"conflicts_with": ("left", "claim1")}
+        )
+        claims["claim1"] = claims["claim1"].model_copy(
+            update={"conflicts_with": ()}
+        )
+    else:
+        claims["right"] = claims["right"].model_copy(update={"conflicts_with": ()})
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" not in codes
+
+
+def test_conflict_neighbors_are_undirected_and_ignore_self_and_unknown() -> None:
+    build_neighbors = getattr(validation_module, "_conflict_neighbors", None)
+    assert build_neighbors is not None
+    claims = {
+        "left": make_claim().model_copy(update={
+            "claim_id": "left",
+            "conflicts_with": ("left", "right", "unknown"),
+        }),
+        "right": make_claim().model_copy(update={
+            "claim_id": "right",
             "conflicts_with": (),
         }),
-    })
-    assert "conflict_evidence_missing" not in {
-        issue.code for issue in validate_case(conflict, environment, chunks, claims)
     }
+
+    assert build_neighbors(claims) == {
+        "left": frozenset({"right"}),
+        "right": frozenset({"left"}),
+    }
+
+
+def test_conflict_neighbors_do_not_rescan_declared_conflict_tuples() -> None:
+    contains_calls = 0
+
+    class CountingConflicts(tuple):
+        def __contains__(self, item: object) -> bool:
+            nonlocal contains_calls
+            contains_calls += 1
+            return super().__contains__(item)
+
+    declared = CountingConflicts(("right",))
+    claims = {
+        "left": make_claim().model_copy(update={
+            "claim_id": "left",
+            "conflicts_with": declared,
+        }),
+        "right": make_claim().model_copy(update={
+            "claim_id": "right",
+            "conflicts_with": (),
+        }),
+    }
+
+    neighbors = validation_module._conflict_neighbors(claims)
+
+    assert neighbors["left"] == frozenset({"right"})
+    assert contains_calls == 0
+
+
+def test_bipartite_conflict_search_uses_constant_time_research_intersection() -> None:
+    has_adjudicated_conflict = getattr(
+        validation_module, "_has_adjudicated_visible_conflict", None
+    )
+    assert has_adjudicated_conflict is not None
+    contains_calls = 0
+
+    class CountingNeighbors(frozenset):
+        def __contains__(self, item: object) -> bool:
+            nonlocal contains_calls
+            contains_calls += 1
+            return super().__contains__(item)
+
+        def __and__(self, other: object):
+            return CountingNeighbors(super().__and__(other))
+
+        def __sub__(self, other: object):
+            return CountingNeighbors(super().__sub__(other))
+
+    def bipartite_without_witness(
+        partition_size: int,
+        neighbor_type=CountingNeighbors,
+    ):
+        left = {f"left-{index:03d}" for index in range(partition_size)}
+        right = {f"right-{index:03d}" for index in range(partition_size)}
+        left_research = {
+            f"left-research-{index:03d}" for index in range(partition_size)
+        }
+        right_research = {
+            f"right-research-{index:03d}" for index in range(partition_size)
+        }
+        neighbors = {}
+        for visible_id in left:
+            neighbors[visible_id] = neighbor_type(right | left_research)
+        for visible_id in right:
+            neighbors[visible_id] = neighbor_type(left | right_research)
+        for research_id in left_research:
+            neighbors[research_id] = neighbor_type(left)
+        for research_id in right_research:
+            neighbors[research_id] = neighbor_type(right)
+        return left | right, left_research | right_research, neighbors
+
+    def membership_checks(partition_size: int) -> int:
+        nonlocal contains_calls
+        contains_calls = 0
+        visible, research, neighbors = bipartite_without_witness(partition_size)
+
+        assert not has_adjudicated_conflict(visible, research, neighbors)
+        return contains_calls
+
+    small_count = membership_checks(15)
+    large_count = membership_checks(30)
+
+    assert small_count > 0
+    assert large_count <= small_count * 5
+
+    visible, research, neighbors = bipartite_without_witness(200, frozenset)
+    started_at = perf_counter()
+    assert not has_adjudicated_conflict(visible, research, neighbors)
+    elapsed = perf_counter() - started_at
+    assert elapsed < 2.0
+
+
+def test_outdated_search_scales_with_edges_without_tuple_membership_scans() -> None:
+    equality_checks = 0
+
+    class CountingConflictRef(str):
+        def __eq__(self, other: object) -> bool:
+            nonlocal equality_checks
+            equality_checks += 1
+            return super().__eq__(other)
+
+        __hash__ = str.__hash__
+
+    def dense_equal_time_case(size: int) -> int:
+        nonlocal equality_checks
+        visible_chunk_ids = [f"visible-{index:03d}" for index in range(size)]
+        research_chunk_ids = [f"research-{index:03d}" for index in range(size)]
+        old_claim_ids = [f"old-{index:03d}" for index in range(size)]
+        current_claim_ids = [f"current-{index:03d}" for index in range(size)]
+        environment = make_environment(
+            visible_chunk_ids=visible_chunk_ids,
+            research_chunk_ids=research_chunk_ids,
+        )
+        chunks = {
+            chunk.chunk_id: chunk
+            for chunk in (
+                *(
+                    make_chunk(chunk_id, (claim_id,))
+                    for chunk_id, claim_id in zip(visible_chunk_ids, old_claim_ids)
+                ),
+                *(
+                    make_chunk(chunk_id, (claim_id,))
+                    for chunk_id, claim_id in zip(research_chunk_ids, current_claim_ids)
+                ),
+                make_chunk("excluded", ()),
+            )
+        }
+        equal_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        conflict_refs = tuple(CountingConflictRef(item) for item in current_claim_ids)
+        claims = {
+            claim_id: make_claim().model_copy(update={
+                "claim_id": claim_id,
+                "evidence_chunk_ids": (chunk_id,),
+                "valid_from": None,
+                "valid_until": equal_time,
+                "conflicts_with": conflict_refs,
+            })
+            for chunk_id, claim_id in zip(visible_chunk_ids, old_claim_ids)
+        }
+        claims.update({
+            claim_id: make_claim().model_copy(update={
+                "claim_id": claim_id,
+                "evidence_chunk_ids": (chunk_id,),
+                "valid_from": equal_time,
+                "conflicts_with": (),
+            })
+            for chunk_id, claim_id in zip(research_chunk_ids, current_claim_ids)
+        })
+        target = make_case(category="outdated").model_copy(update={
+            "required_claim_ids": tuple(current_claim_ids),
+            "missing_claim_ids": tuple(current_claim_ids),
+            "evidence_chunk_ids": tuple(research_chunk_ids),
+        })
+        equality_checks = 0
+
+        codes = {
+            issue.code for issue in validate_case(target, environment, chunks, claims)
+        }
+
+        assert "outdated_evidence_missing" in codes
+        return equality_checks
+
+    small_count = dense_equal_time_case(12)
+    large_count = dense_equal_time_case(24)
+
+    assert small_count > 0
+    assert large_count <= small_count * 5
+
+
+def test_conflict_unknown_links_do_not_crash_or_replace_two_sided_adjudication() -> None:
+    target, environment, chunks, claims = conflict_data(
+        adjudicator_conflicts=("left", "right", "unknown")
+    )
+    claims["left"] = claims["left"].model_copy(
+        update={"conflicts_with": ("right", "unknown")}
+    )
+
+    codes = {issue.code for issue in validate_case(target, environment, chunks, claims)}
+
+    assert "conflict_evidence_missing" not in codes
 
 
 def test_repeated_knowledge_adds_no_category_specific_issue():

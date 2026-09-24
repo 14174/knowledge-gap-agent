@@ -24,6 +24,7 @@ from knowledge_gap_agent.benchmark.validation import (
     LABEL_FIELDS,
     build_model_input_payload,
     build_runtime_payload,
+    validate_case,
     validate_dataset,
 )
 from knowledge_gap_agent.contracts.benchmark import (
@@ -524,6 +525,92 @@ def test_all_models_and_dataset_rules_validate(fixture_data) -> None:
     _, chunks, claims, _, cases, environments = fixture_data
 
     assert validate_dataset(cases, environments, chunks, claims) == ()
+
+
+def test_each_high_risk_fixture_satisfies_strict_evidence_semantics(
+    fixture_data,
+) -> None:
+    _, chunks, claims, _, cases, environments = fixture_data
+    chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    claims_by_id = {claim.claim_id: claim for claim in claims}
+    environments_by_id = {
+        environment.environment_id: environment for environment in environments
+    }
+    known_claim_ids = set(claims_by_id)
+    conflict_neighbors = {claim_id: set() for claim_id in known_claim_ids}
+    for claim_id, claim in claims_by_id.items():
+        for conflict_id in claim.conflicts_with:
+            if conflict_id == claim_id or conflict_id not in known_claim_ids:
+                continue
+            conflict_neighbors[claim_id].add(conflict_id)
+            conflict_neighbors[conflict_id].add(claim_id)
+    high_risk_cases = [
+        case
+        for case in cases
+        if case.category in {CaseCategory.OUTDATED, CaseCategory.CONFLICT}
+    ]
+
+    assert Counter(case.category for case in high_risk_cases) == {
+        CaseCategory.OUTDATED: 12,
+        CaseCategory.CONFLICT: 12,
+    }
+    for case in high_risk_cases:
+        environment = environments_by_id[case.environment_id]
+        issues = validate_case(case, environment, chunks_by_id, claims_by_id)
+        assert issues == (), case.case_id
+        visible_claim_ids = {
+            claim_id
+            for chunk_id in environment.visible_chunk_ids
+            for claim_id in chunks_by_id[chunk_id].claim_ids
+        }
+        research_required_ids = (
+            set(case.required_claim_ids)
+            & {
+                claim_id
+                for chunk_id in environment.research_chunk_ids
+                for claim_id in chunks_by_id[chunk_id].claim_ids
+            }
+        )
+
+        if case.category is CaseCategory.OUTDATED:
+            handoff_witnesses: set[tuple[str, str]] = set()
+            for old_id in visible_claim_ids:
+                for current_id in conflict_neighbors[old_id] & research_required_ids:
+                    old_until = claims_by_id[old_id].valid_until
+                    current_from = claims_by_id[current_id].valid_from
+                    if (
+                        old_id != current_id
+                        and old_until is not None
+                        and old_until.utcoffset() is not None
+                        and current_from is not None
+                        and current_from.utcoffset() is not None
+                        and old_until < current_from
+                    ):
+                        handoff_witnesses.add((old_id, current_id))
+            assert handoff_witnesses, case.case_id
+            assert all(old_id != current_id for old_id, current_id in handoff_witnesses)
+        else:
+            visible_edges: set[tuple[str, str]] = set()
+            for left_id in visible_claim_ids:
+                for right_id in conflict_neighbors[left_id] & visible_claim_ids:
+                    if left_id < right_id:
+                        visible_edges.add((left_id, right_id))
+            adjudication_witnesses: set[tuple[str, str, str]] = set()
+            for left_id, right_id in visible_edges:
+                common_neighbors = (
+                    conflict_neighbors[left_id]
+                    & conflict_neighbors[right_id]
+                    & research_required_ids
+                )
+                for adjudicator_id in common_neighbors - {left_id, right_id}:
+                    adjudication_witnesses.add(
+                        (left_id, right_id, adjudicator_id)
+                    )
+            assert adjudication_witnesses, case.case_id
+            assert all(
+                len({left_id, right_id, adjudicator_id}) == 3
+                for left_id, right_id, adjudicator_id in adjudication_witnesses
+            )
 
 
 def test_claim_chunk_links_are_bidirectional_and_sources_are_allowed(fixture_data) -> None:
