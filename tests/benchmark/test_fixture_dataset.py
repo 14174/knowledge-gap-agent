@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import knowledge_gap_agent.benchmark.review as review_module
 from knowledge_gap_agent.benchmark.models import KnowledgeEnvironment
 from knowledge_gap_agent.benchmark.review import (
     ReviewDecision,
@@ -44,8 +46,13 @@ CHUNKS_PATH = ROOT / "fixtures" / "corpus" / "chunks.jsonl"
 CLAIMS_PATH = ROOT / "fixtures" / "corpus" / "claims.jsonl"
 DRAFTS_PATH = ROOT / "fixtures" / "benchmark" / "drafts.jsonl"
 REVIEW_INPUTS_PATH = ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl"
+REVIEWER_PROMPT_PATH = ROOT / "fixtures" / "benchmark" / "reviewer_prompt_v1.md"
 REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
 CHANGE_LOG_PATH = ROOT / "fixtures" / "benchmark" / "change_log.jsonl"
+REVIEW_HISTORY_DIR = ROOT / "fixtures" / "benchmark" / "review_history"
+ROUND1_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-1-inputs.jsonl"
+ROUND1_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-1-reviews.jsonl"
+PROPOSED_REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.proposed.jsonl"
 CONTROLLED_SOURCE_PATH = (
     ROOT / "fixtures" / "sources" / "controlled" / "benchmark-distractors.md"
 )
@@ -96,9 +103,39 @@ EXPECTED_FILES = (
     CLAIMS_PATH,
     DRAFTS_PATH,
     REVIEW_INPUTS_PATH,
+    REVIEWER_PROMPT_PATH,
+    ROUND1_INPUTS_PATH,
+    ROUND1_REVIEWS_PATH,
     REVIEWS_PATH,
     CHANGE_LOG_PATH,
 )
+ROUND1_INPUTS_HASH = "b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8"
+ROUND1_REVIEWS_HASH = "7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147"
+ROUND1_PROMPT_VERSION = "day2-benchmark-review-v1"
+ROUND1_PROMPT_HASH = "5f1f17ef7e6ee0c5f9ca7ebabcb560faca51b23763501e94b27a4fd9c53399b7"
+REVISED_QUESTIONS = {
+    "base-02": (
+        "冻结数据模型的集合字段时，自定义不可变 list 子类为何不足，为什么选择 tuple，"
+        "并如何保持 JSON 数组兼容？"
+    ),
+    "base-08": (
+        "完整 RAG 如何完成知识准备、检索、提示词注入与回答生成？面对异构文档，"
+        "为什么要统一转换为 Markdown，又如何在转换后分块、向量化并进入存储检索？"
+    ),
+}
+ROUND1_REVISE_CASE_IDS = {
+    "case-264f4a2113be6ba0",
+    "case-2a7053b2297128ee",
+    "case-644c0347472ace97",
+    "case-7691ad2444757f71",
+    "case-7fd2c5ab217bd713",
+    "case-a3fa760ae9f821fb",
+}
+QUALITY_AUDIT_CASE_IDS = {
+    "case-afd7e0cfe5fb1afb",
+    "case-42caaf49a65abdc0",
+}
+REVISED_CASE_IDS = ROUND1_REVISE_CASE_IDS | QUALITY_AUDIT_CASE_IDS
 CURRENT_CLAIM_CONTRACTS = {
     "current-01-a": (
         "规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。",
@@ -651,6 +688,323 @@ def test_review_inputs_are_complete_auditable_and_reasoning_free(fixture_data) -
         assert "human_review_status" not in type(item.case).model_fields
 
 
+def test_round1_reviewer_artifacts_are_archived_verbatim_and_bound() -> None:
+    assert ROUND1_INPUTS_PATH.is_file()
+    assert ROUND1_REVIEWS_PATH.is_file()
+    assert not PROPOSED_REVIEWS_PATH.exists()
+    assert hashlib.sha256(ROUND1_INPUTS_PATH.read_bytes()).hexdigest() == ROUND1_INPUTS_HASH
+    assert hashlib.sha256(ROUND1_REVIEWS_PATH.read_bytes()).hexdigest() == ROUND1_REVIEWS_HASH
+
+    archived_inputs = tuple(
+        ReviewInput.model_validate_json(line)
+        for line in ROUND1_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+    )
+    archived_reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in ROUND1_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+    )
+    inputs_by_case = {item.case.case_id: item for item in archived_inputs}
+
+    assert len(archived_inputs) == len(archived_reviews) == 48
+    assert Counter(review.decision for review in archived_reviews) == {
+        ReviewDecision.APPROVE: 42,
+        ReviewDecision.REVISE: 6,
+    }
+    assert {review.case_id for review in archived_reviews} == set(inputs_by_case)
+    assert all(
+        review.review_target_hash == inputs_by_case[review.case_id].review_target_hash
+        for review in archived_reviews
+    )
+    assert {review.prompt_version for review in archived_reviews} == {
+        ROUND1_PROMPT_VERSION
+    }
+    assert {review.prompt_hash for review in archived_reviews} == {ROUND1_PROMPT_HASH}
+
+
+def test_round1_prompt_bytes_match_reviews_and_change_log() -> None:
+    prompt_hash = hashlib.sha256(REVIEWER_PROMPT_PATH.read_bytes()).hexdigest()
+    archived_reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in ROUND1_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+    )
+    revision_model = getattr(review_module, "ReviewRevisionRecord")
+    revision_records = tuple(
+        revision_model.model_validate_json(line)
+        for line in CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()[:2]
+    )
+
+    assert prompt_hash == ROUND1_PROMPT_HASH
+    assert {review.prompt_hash for review in archived_reviews} == {prompt_hash}
+    assert {record.prompt_hash for record in revision_records} == {prompt_hash}
+
+
+def test_first_revision_changes_exactly_eight_review_targets(fixture_data) -> None:
+    _, _, _, _, cases, _ = fixture_data
+    current_inputs = {
+        item.case.case_id: item
+        for item in (
+            ReviewInput.model_validate_json(line)
+            for line in REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    archived_inputs = {
+        item.case.case_id: item
+        for item in (
+            ReviewInput.model_validate_json(line)
+            for line in ROUND1_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    archived_reviews = {
+        item.case_id: item
+        for item in (
+            ReviewRecord.model_validate_json(line)
+            for line in ROUND1_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    changed = {
+        case_id
+        for case_id, current in current_inputs.items()
+        if current.review_target_hash != archived_inputs[case_id].review_target_hash
+    }
+    stale_reviews = {
+        case_id
+        for case_id, review in archived_reviews.items()
+        if review.review_target_hash != current_inputs[case_id].review_target_hash
+    }
+
+    assert set(current_inputs) == set(archived_inputs) == {case.case_id for case in cases}
+    assert changed == stale_reviews == REVISED_CASE_IDS
+    assert {
+        review.case_id
+        for review in archived_reviews.values()
+        if review.decision is ReviewDecision.REVISE
+    } == ROUND1_REVISE_CASE_IDS
+    assert QUALITY_AUDIT_CASE_IDS == {
+        case.case_id
+        for case in cases
+        if case.base_question_id in REVISED_QUESTIONS
+        and case.category is CaseCategory.LOCAL_SUFFICIENT
+    }
+    assert all(
+        current_inputs[case_id].review_target_hash
+        == archived_inputs[case_id].review_target_hash
+        for case_id in set(current_inputs) - REVISED_CASE_IDS
+    )
+    for case_id in REVISED_CASE_IDS:
+        current_payload = current_inputs[case_id].model_dump(
+            mode="json", exclude={"review_target_hash"}
+        )
+        archived_payload = archived_inputs[case_id].model_dump(
+            mode="json", exclude={"review_target_hash"}
+        )
+        archived_payload["case"]["question"] = current_payload["case"]["question"]
+        assert current_payload == archived_payload
+
+
+def test_revised_questions_make_both_required_claims_explicit(fixture_data) -> None:
+    _, _, _, _, cases, _ = fixture_data
+    for base_question_id, expected_question in REVISED_QUESTIONS.items():
+        family = [case for case in cases if case.base_question_id == base_question_id]
+        assert len(family) == 4
+        assert {case.question for case in family} == {expected_question}
+        assert all(case.answer_key == case.required_claims for case in family)
+
+
+def test_change_log_records_nonhuman_round1_revision(fixture_data) -> None:
+    del fixture_data
+    revision_model = getattr(review_module, "ReviewRevisionRecord")
+    records = tuple(
+        revision_model.model_validate_json(line)
+        for line in CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    )
+
+    assert len(records) == 2
+    assert {record.base_question_id for record in records} == set(REVISED_QUESTIONS)
+    assert all(record.human_approved is False for record in records)
+    assert all(record.actor == "independent_reviewer_and_quality_audit" for record in records)
+    assert all(record.trigger == "round_1_review_revision" for record in records)
+    assert all(record.round1_inputs_hash == ROUND1_INPUTS_HASH for record in records)
+    assert all(record.round1_reviews_hash == ROUND1_REVIEWS_HASH for record in records)
+    assert all(record.prompt_version == ROUND1_PROMPT_VERSION for record in records)
+    assert all(record.prompt_hash == ROUND1_PROMPT_HASH for record in records)
+    assert set().union(*(set(record.affected_case_ids) for record in records)) == (
+        REVISED_CASE_IDS
+    )
+    assert set().union(*(set(record.reviewer_revise_case_ids) for record in records)) == (
+        ROUND1_REVISE_CASE_IDS
+    )
+    assert set().union(*(set(record.quality_audit_case_ids) for record in records)) == (
+        QUALITY_AUDIT_CASE_IDS
+    )
+    assert all(record.after_question == REVISED_QUESTIONS[record.base_question_id]
+               for record in records)
+    for record in records:
+        assert len(record.affected_case_ids) == 4
+        assert len(record.reviewer_revise_case_ids) == 3
+        assert len(record.quality_audit_case_ids) == 1
+
+
+def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
+    fixture_data,
+) -> None:
+    del fixture_data
+    original = CHANGE_LOG_PATH.read_bytes()
+    existing_test_record = {
+        "actor": "human_test",
+        "human_approved": False,
+        "record_type": "append_only_regression",
+        "test_only": True,
+    }
+    concurrent_test_record = {
+        "actor": "human_test",
+        "human_approved": False,
+        "record_type": "concurrent_append_regression",
+        "test_only": True,
+    }
+    existing = original + (
+        canonical_json(existing_test_record) + "\n"
+    ).encode("utf-8")
+    concurrent = (canonical_json(concurrent_test_record) + "\n").encode("utf-8")
+    try:
+        CHANGE_LOG_PATH.write_bytes(existing)
+        process = subprocess.Popen(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        with CHANGE_LOG_PATH.open("ab") as stream:
+            stream.write(concurrent)
+        stdout, stderr = process.communicate(timeout=60)
+        assert process.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
+        assert CHANGE_LOG_PATH.read_bytes() == existing + concurrent
+    finally:
+        CHANGE_LOG_PATH.write_bytes(original)
+
+
+@pytest.mark.parametrize("damaged_state", ("empty", "missing"))
+def test_rebuild_rejects_missing_or_empty_change_log_before_writing_outputs(
+    fixture_data, damaged_state: str,
+) -> None:
+    del fixture_data
+    original_log = CHANGE_LOG_PATH.read_bytes()
+    original_drafts = DRAFTS_PATH.read_bytes()
+    sentinel = b"test sentinel: damaged change log must fail before writes\n"
+    try:
+        if damaged_state == "empty":
+            CHANGE_LOG_PATH.write_bytes(b"")
+        else:
+            CHANGE_LOG_PATH.unlink()
+        DRAFTS_PATH.write_bytes(sentinel)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "change_log.jsonl" in result.stderr
+        if damaged_state == "empty":
+            assert CHANGE_LOG_PATH.read_bytes() == b""
+        else:
+            assert not CHANGE_LOG_PATH.exists()
+        assert DRAFTS_PATH.read_bytes() == sentinel
+    finally:
+        CHANGE_LOG_PATH.write_bytes(original_log)
+        DRAFTS_PATH.write_bytes(original_drafts)
+
+
+def test_rebuild_rejects_tampered_round1_prompt_before_writing_outputs(
+    fixture_data,
+) -> None:
+    del fixture_data
+    original_prompt = REVIEWER_PROMPT_PATH.read_bytes()
+    original_drafts = DRAFTS_PATH.read_bytes()
+    tampered_prompt = original_prompt + b"\n"
+    sentinel = b"test sentinel: prompt mismatch must fail before writes\n"
+    try:
+        REVIEWER_PROMPT_PATH.write_bytes(tampered_prompt)
+        DRAFTS_PATH.write_bytes(sentinel)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "reviewer_prompt_v1.md" in result.stderr
+        assert REVIEWER_PROMPT_PATH.read_bytes() == tampered_prompt
+        assert DRAFTS_PATH.read_bytes() == sentinel
+    finally:
+        REVIEWER_PROMPT_PATH.write_bytes(original_prompt)
+        DRAFTS_PATH.write_bytes(original_drafts)
+
+
+def test_rebuild_rejects_changed_change_log_prefix_before_writing_outputs(
+    fixture_data,
+) -> None:
+    del fixture_data
+    original_log = CHANGE_LOG_PATH.read_bytes()
+    original_drafts = DRAFTS_PATH.read_bytes()
+    tampered = original_log.replace(
+        b'"independent_reviewer_and_quality_audit"',
+        b'"xndependent_reviewer_and_quality_audit"',
+        1,
+    )
+    assert tampered != original_log
+    try:
+        CHANGE_LOG_PATH.write_bytes(tampered)
+        DRAFTS_PATH.write_bytes(b"test sentinel: builder must fail before writes\n")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "change_log.jsonl" in result.stderr
+        assert CHANGE_LOG_PATH.read_bytes() == tampered
+        assert DRAFTS_PATH.read_bytes() == b"test sentinel: builder must fail before writes\n"
+    finally:
+        CHANGE_LOG_PATH.write_bytes(original_log)
+        DRAFTS_PATH.write_bytes(original_drafts)
+
+
+@pytest.mark.parametrize(
+    "invalid_suffix",
+    (
+        b'[]\n',
+        b'{ "test_only":true}\n',
+        b'{"test_only":true}\r\n',
+        b'{"test_only":true}',
+    ),
+)
+def test_rebuild_rejects_invalid_change_log_append(
+    fixture_data, invalid_suffix: bytes,
+) -> None:
+    del fixture_data
+    original = CHANGE_LOG_PATH.read_bytes()
+    invalid = original + invalid_suffix
+    try:
+        CHANGE_LOG_PATH.write_bytes(invalid)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "change_log.jsonl" in result.stderr
+        assert CHANGE_LOG_PATH.read_bytes() == invalid
+    finally:
+        CHANGE_LOG_PATH.write_bytes(original)
+
+
 def test_pending_fixture_review_can_apply_gate_then_freeze_without_rebinding(
     fixture_data, tmp_path: Path,
 ) -> None:
@@ -783,13 +1137,21 @@ def test_jsonl_is_canonical_and_reviewer_outputs_remain_empty(fixture_data) -> N
     _, _, _, drafts, _, _ = fixture_data
     assert all(set(draft) == {"case", "environment"} for draft in drafts)
     for path in (
-        DOCUMENTS_PATH, CHUNKS_PATH, CLAIMS_PATH, DRAFTS_PATH, REVIEW_INPUTS_PATH,
+        DOCUMENTS_PATH,
+        CHUNKS_PATH,
+        CLAIMS_PATH,
+        DRAFTS_PATH,
+        REVIEW_INPUTS_PATH,
+        CHANGE_LOG_PATH,
+        ROUND1_INPUTS_PATH,
+        ROUND1_REVIEWS_PATH,
     ):
         lines = path.read_text(encoding="utf-8").splitlines()
         assert lines
         assert all(line == canonical_json(json.loads(line)) for line in lines)
     assert REVIEWS_PATH.read_bytes() == b""
-    assert CHANGE_LOG_PATH.read_bytes() == b""
+    assert len(CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()) == 2
+    assert not PROPOSED_REVIEWS_PATH.exists()
 
 
 def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> None:
@@ -801,6 +1163,8 @@ def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> Non
         CLAIMS_PATH,
         DRAFTS_PATH,
         REVIEW_INPUTS_PATH,
+        ROUND1_INPUTS_PATH,
+        ROUND1_REVIEWS_PATH,
         REVIEWS_PATH,
         CHANGE_LOG_PATH,
     )

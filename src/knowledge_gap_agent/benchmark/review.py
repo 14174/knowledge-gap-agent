@@ -206,6 +206,70 @@ class ReviewRecord(BaseModel):
         return self
 
 
+class ReviewRevisionRecord(BaseModel):
+    """候选问题在复核后修订的最小、非人工审计记录。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    base_question_id: NonEmptyString
+    actor: Literal["independent_reviewer_and_quality_audit"]
+    trigger: Literal["round_1_review_revision"]
+    human_approved: Literal[False] = False
+    before_question: NonEmptyString
+    after_question: NonEmptyString
+    affected_case_ids: tuple[NonEmptyString, ...] = Field(min_length=1)
+    reviewer_revise_case_ids: tuple[NonEmptyString, ...] = Field(min_length=1)
+    quality_audit_case_ids: tuple[NonEmptyString, ...] = Field(min_length=1)
+    reason: NonEmptyString
+    changed_at: datetime
+    round1_inputs_hash: Sha256Hex
+    round1_reviews_hash: Sha256Hex
+    prompt_version: NonEmptyString
+    prompt_hash: Sha256Hex
+
+    @field_validator(
+        "base_question_id", "before_question", "after_question", "reason", "prompt_version"
+    )
+    @classmethod
+    def reject_blank_revision_strings(cls, value: str, info: Any) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator(
+        "affected_case_ids", "reviewer_revise_case_ids", "quality_audit_case_ids"
+    )
+    @classmethod
+    def validate_revision_case_ids(
+        cls, values: tuple[str, ...], info: Any
+    ) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError(f"{info.field_name} must not contain blank strings")
+        if len(values) != len(set(values)):
+            raise ValueError(f"{info.field_name} must not contain duplicate values")
+        return values
+
+    @field_validator("changed_at")
+    @classmethod
+    def require_revision_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("changed_at must include timezone information")
+        return value
+
+    @model_validator(mode="after")
+    def validate_revision_scope(self):
+        if self.before_question == self.after_question:
+            raise ValueError("before_question and after_question must differ")
+        reviewer = set(self.reviewer_revise_case_ids)
+        quality = set(self.quality_audit_case_ids)
+        if reviewer & quality:
+            raise ValueError("reviewer and quality audit case ids must be disjoint")
+        if set(self.affected_case_ids) != reviewer | quality:
+            raise ValueError("affected_case_ids must equal reviewer and quality audit union")
+        return self
+
+
 def _revalidate_inputs(
     case: BenchmarkCase, review: ReviewRecord
 ) -> tuple[BenchmarkCase, ReviewRecord]:

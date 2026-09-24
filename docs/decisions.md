@@ -53,3 +53,23 @@ Pydantic 的 `frozen=True` 只阻止字段重新赋值，不能阻止 `list.appe
 - 内容变化后必须重新生成 Reviewer 输入并重新复核，不能沿用旧结论。
 - `reviews.jsonl` 非空时，确定性重建会先校验所有目标哈希；失配时不覆盖原文件。
 - 该机制只防止陈旧复核，不产生复核结论，也不替代人工批准。
+
+## 2026-09-24：Reviewer 修订保留不可变首轮历史
+
+### 背景
+
+首轮独立 Reviewer 对 48 条候选给出 42 条 `approve`、6 条 `revise`。质量审计发现 base-02 与 base-08 的两条 `local_sufficient` 也具有相同的问题必要性缺陷，因此实际修订范围是两个基础问题的全部 8 条候选。若覆盖首轮输入或原 Reviewer 输出，会丢失结论形成时的精确上下文；若把质量审计补充项改写进 Reviewer 输出，则会伪造 Reviewer 结论。
+
+### 决策
+
+首轮 `review_inputs.jsonl` 和 Reviewer 原输出按原始字节归档到 `fixtures/benchmark/review_history/`，并固定文件 SHA-256、提示词版本与提示词哈希。修订只收紧 base-02、base-08 的问题文本，不改来源、claims、证据或不透明编号。`change_log.jsonl` 每个基础问题一条记录，分别列出原 Reviewer 的 3 条 `revise` 与质量审计补充的 1 条 `local_sufficient`，`actor` 明确为独立 Reviewer 与质量审计，`human_approved=false`。
+
+### 影响
+
+- 修订后恰 8 条 `review_target_hash` 变化，其余 40 条仍与首轮输入匹配。
+- 首轮 6 条 `revise` 原样保留，不能扩写成 8 条 Reviewer 结论。
+- 当前 `reviews.jsonl` 继续为空，48 条修订后输入需重新独立复审。
+- 本次修订和审计记录不代表人工批准，也不允许生成正式冻结文件。
+- base-02 只询问现有 `current-02-a`、`current-02-b` 能直接回答的三项：自定义不可变 `list` 子类为何不足、为何选择 `tuple`、如何保持 JSON 数组兼容；普通 `list` 不单列为问题要求。
+- `change_log.jsonl` 是版本化非空夹具，初始化只允许通过受审提交或人工流程完成。构建器对它没有写权限：缺失或零字节时早拒绝；非空时在其他产物写盘前只读校验两条确定性 Reviewer 修订前缀与后续规范 JSON 对象，并逐字节保留人工流程拥有的追加记录。
+- 首轮提示词哈希不能只信任常量或复核记录自报。构建器必须读取 `reviewer_prompt_v1.md` 原始字节求 SHA-256，再与固定预期、首轮 reviews 和修订前缀的 `prompt_hash` 交叉核对；任一不一致均在写盘前拒绝。

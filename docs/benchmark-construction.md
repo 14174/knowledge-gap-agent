@@ -2,7 +2,7 @@
 
 ## 1. 范围与状态
 
-本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。`reviews.jsonl` 与 `change_log.jsonl` 当前为空；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有写入模型复核或人工批准结论。
+本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`，已连同当时输入归档到 `review_history/`；质量审计确认相同问题必要性缺陷还影响 base-02、base-08 的两条 `local_sufficient`，因此本轮实际修订 8 条。当前 `reviews.jsonl` 仍为空，`change_log.jsonl` 只记录两组非人工修订；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
 
 构建时间统一固定为 `2026-09-24T00:00:00+08:00`。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
 
@@ -38,13 +38,13 @@
 | 编号 | 主题 | 当前证据重点 |
 | --- | --- | --- |
 | 01 | 规范 JSON 哈希 | 映射键排序与配置身份变量。 |
-| 02 | 冻结容器 | Python 内部 `tuple` 与 JSON 数组兼容。 |
+| 02 | 冻结容器 | 自定义不可变 `list` 子类的不足、内部 `tuple` 与 JSON 数组兼容。 |
 | 03 | 测试驱动开发 | 先观察红灯及用回归测试固定缺陷。 |
 | 04 | 双级审查 | 规格先于质量，且审查角色独立。 |
 | 05 | 模块边界 | 语料职责边界与避免重复状态机。 |
 | 06 | Agent 框架消息契约 | 四类角色消息与历史上下文。 |
 | 07 | 记忆分层 | 会话工作记忆与长期语义记忆。 |
-| 08 | 检索流程 | 数据准备、召回、提示词注入和生成。 |
+| 08 | 检索流程 | 完整 RAG 与异构文档统一转 Markdown 后的处理。 |
 | 09 | 评测指标 | 知识缺口指标与任务相关的多维评测。 |
 | 10 | 评测数据隔离 | 运行、标签、审计物理隔离与正式冻结门禁。 |
 | 11 | 学习路线 | 可运行项目阶梯与评估、可观测性阶段。 |
@@ -120,7 +120,17 @@
 
 ## 7. Reviewer 隔离与人工门禁
 
-独立 Reviewer 只接收 `review_inputs.jsonl` 中的基础问题、环境三池正文、主张、证据和结构化草稿，不接收 `annotation_reason`、`review_status`、`human_review_status` 或 Labeler 的隐藏推理文本。后两个状态是复核及人工门禁输出。Reviewer 返回的 `review_target_hash` 必须来自对应输入。当前 `reviews.jsonl` 保持零字节，留给独立 Reviewer Agent 全量复核；脚本也不会伪造 `approve`、`revise`、`reject` 或置信度。这一步只防止陈旧复核，不代表模型复核或人工批准已经完成。
+独立 Reviewer 只接收 `review_inputs.jsonl` 中的基础问题、环境三池正文、主张、证据和结构化草稿，不接收 `annotation_reason`、`review_status`、`human_review_status` 或 Labeler 的隐藏推理文本。后两个状态是复核及人工门禁输出。Reviewer 返回的 `review_target_hash` 必须来自对应输入。当前 `reviews.jsonl` 保持零字节，留给修订后的独立复审；脚本不会把首轮意见伪装成当前结论，也不会伪造人工批准。
+
+### 7.1 首轮复核修订
+
+首轮输入与 Reviewer 原输出分别原样归档为 `review_history/round-1-inputs.jsonl` 和 `round-1-reviews.jsonl`，字节哈希固定为 `b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8`、`7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147`。复核提示词版本为 `day2-benchmark-review-v1`。构建与测试均实际读取 `reviewer_prompt_v1.md` 原始字节并计算 SHA-256，结果必须为 `5f1f17ef7e6ee0c5f9ca7ebabcb560faca51b23763501e94b27a4fd9c53399b7`，且必须与首轮 reviews 和两条修订记录的 `prompt_hash` 一致。
+
+- base-02 的问题新增三个明确子问：自定义不可变 `list` 子类为何不足、为何选择 `tuple`、如何保持 JSON 数组兼容。普通 `list` 不作为独立子问，避免超出现有两条必需主张的直接证据边界。
+- base-08 的问题同时要求完整 RAG 流程，以及异构文档为何、如何统一转为 Markdown 并进入后续分块、向量化和检索。
+- 原 Reviewer 标记 6 条 `revise`；质量审计补充两组的 `local_sufficient`，实际修订为两个基础问题各 4 条，共 8 条。只改问题及由问题参与计算的目标哈希，来源、claims、证据、case ID 和 environment ID 均不变。
+- 两条 `change_log.jsonl` 记录的 `actor` 是独立 Reviewer 与质量审计，`human_approved=false`。本轮不是人工终审，修订后 48 条输入仍需独立复审。
+- `change_log.jsonl` 是版本化非空夹具，初始化只允许通过受审提交或人工流程完成，不属于构建器。构建器绝不创建、初始化或写入该文件；它在其他产物写盘前只读验证精确前缀、终止 LF 和所有后续行均为规范 JSON 对象。缺失或零字节视为损坏，前缀后的人工追加记录归人工流程所有并逐字节保留。
 
 Reviewer 完成后，所有 `outdated` 和 `conflict` 样本、置信度低于 `0.8` 的样本、`revise`、`reject` 或曾经规则失败的样本都必须进入人工审核。自动阶段只能把人工状态改为 `pending` 或 `not_required`，不得写入人工 `approved`。人工修改必须追加到 `change_log.jsonl`，不得覆盖旧记录。
 
@@ -137,7 +147,7 @@ uv run python scripts/build_day2_fixtures.py --seed-source-root <固定只读克
 ```powershell
 uv run python scripts/build_day2_fixtures.py
 uv run python -m pytest tests/benchmark/test_fixture_dataset.py -v
-Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl
+Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl,fixtures/benchmark/change_log.jsonl,fixtures/benchmark/review_history/round-1-inputs.jsonl,fixtures/benchmark/review_history/round-1-reviews.jsonl
 ```
 
 本次构建的文件哈希为：
@@ -148,5 +158,8 @@ Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/do
 | `fixtures/corpus/documents.jsonl` | `7b1f07d877ade7d0b1090c3ce39d9710fa2085f60b3f04dad2faeb1a614a4dd5` |
 | `fixtures/corpus/chunks.jsonl` | `91eb2c7272286eff9eaa641a51e07ad6ff597f639d4f170d903644852429bcd7` |
 | `fixtures/corpus/claims.jsonl` | `d59426b529d632ca4036a04172f1b72077e471b31613f4761bfd7031732c4666` |
-| `fixtures/benchmark/drafts.jsonl` | `b5f951c2950dcc37670d262480800895cc033c53a0406b5deaa2a6e351335d6e` |
-| `fixtures/benchmark/review_inputs.jsonl` | `b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8` |
+| `fixtures/benchmark/drafts.jsonl` | `79a947b1fdc347f77a34a58e6b3a4bfa88fa24b78764321a0618684e17f3b994` |
+| `fixtures/benchmark/review_inputs.jsonl` | `d7a734e4b9b23e8c0977f47f3491efd63776ecd160a2e02a4886c40191e20b10` |
+| `fixtures/benchmark/change_log.jsonl` | `5a5c0ec55530ee97e1ccd440994388139a4b6c82e0270a4cc0edac90d46dfa02` |
+| `fixtures/benchmark/review_history/round-1-inputs.jsonl` | `b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8` |
+| `fixtures/benchmark/review_history/round-1-reviews.jsonl` | `7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147` |
