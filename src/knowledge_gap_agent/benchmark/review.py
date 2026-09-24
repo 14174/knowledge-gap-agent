@@ -270,6 +270,42 @@ class ReviewRevisionRecord(BaseModel):
         return self
 
 
+class HumanReviewQueueRecord(BaseModel):
+    """模型复核后等待人工处理的最小审计队列项。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case_id: NonEmptyString
+    category: CaseCategory
+    review_target_hash: Sha256Hex
+    trigger: Literal["high_risk_category"]
+    decision: ReviewDecision
+    reviewer_confidence: float
+    prompt_version: NonEmptyString
+
+    @field_validator("case_id", "prompt_version")
+    @classmethod
+    def reject_blank_queue_strings(cls, value: str, info: Any) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("reviewer_confidence", mode="before")
+    @classmethod
+    def validate_queue_confidence(cls, value: object) -> object:
+        if type(value) is not float:
+            raise ValueError("reviewer_confidence must be a finite float between 0 and 1")
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("reviewer_confidence must be a finite float between 0 and 1")
+        return value
+
+    @model_validator(mode="after")
+    def require_high_risk_category(self):
+        if self.category not in {CaseCategory.OUTDATED, CaseCategory.CONFLICT}:
+            raise ValueError("human review queue only accepts high-risk categories")
+        return self
+
+
 def _revalidate_inputs(
     case: BenchmarkCase, review: ReviewRecord
 ) -> tuple[BenchmarkCase, ReviewRecord]:

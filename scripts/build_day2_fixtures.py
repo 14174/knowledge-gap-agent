@@ -12,14 +12,20 @@ from knowledge_gap_agent.benchmark.models import (
     compute_environment_hash,
 )
 from knowledge_gap_agent.benchmark.review import (
+    HumanReviewQueueRecord,
     ReviewDecision,
     ReviewInput,
     ReviewRecord,
     ReviewRevisionRecord,
+    apply_review_gate,
     build_review_input,
 )
 from knowledge_gap_agent.benchmark.validation import validate_dataset
-from knowledge_gap_agent.contracts.benchmark import BenchmarkCase, CaseCategory
+from knowledge_gap_agent.contracts.benchmark import (
+    BenchmarkCase,
+    CaseCategory,
+    HumanReviewStatus,
+)
 from knowledge_gap_agent.corpus.chunking import chunk_markdown
 from knowledge_gap_agent.corpus.manifest import SourceManifest, SourceManifestEntry
 from knowledge_gap_agent.corpus.models import Claim, CorpusChunk, SourceDocument
@@ -36,6 +42,10 @@ ROUND1_INPUTS_HASH = "b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b
 ROUND1_REVIEWS_HASH = "7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147"
 ROUND1_PROMPT_VERSION = "day2-benchmark-review-v1"
 ROUND1_PROMPT_HASH = "5f1f17ef7e6ee0c5f9ca7ebabcb560faca51b23763501e94b27a4fd9c53399b7"
+ROUND2_INPUTS_HASH = "4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3"
+ROUND2_REVIEWS_HASH = "94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d"
+ROUND2_PROMPT_VERSION = "day2-benchmark-rereview-v1"
+ROUND2_PROMPT_HASH = "6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f"
 ROUND1_REVISED_BASES = frozenset({"base-02", "base-08"})
 ROUND1_REASONS = {
     "base-02": (
@@ -790,10 +800,77 @@ def _load_round1_review_history(prompt_hash: str) -> tuple[
     return archived_inputs, archived_reviews
 
 
+def _validate_round2_review_history(
+    current_inputs_by_case: dict[str, ReviewInput], expected_case_ids: set[str]
+) -> tuple[tuple[ReviewInput, ...], tuple[ReviewRecord, ...]]:
+    history_directory = ROOT / "fixtures" / "benchmark" / "review_history"
+    inputs_path = history_directory / "round-2-inputs.jsonl"
+    reviews_path = history_directory / "round-2-reviews.jsonl"
+    prompt_path = ROOT / "fixtures" / "benchmark" / "reviewer_revision_prompt_v1.md"
+    expected_hashes = {
+        inputs_path: ROUND2_INPUTS_HASH,
+        reviews_path: ROUND2_REVIEWS_HASH,
+        prompt_path: ROUND2_PROMPT_HASH,
+    }
+    for path, expected_hash in expected_hashes.items():
+        if not path.is_file():
+            raise FileNotFoundError(f"缺少第二轮 Reviewer 归档：{path}")
+        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"第二轮 Reviewer 归档哈希不匹配：{path.name} "
+                f"expected={expected_hash} actual={actual_hash}"
+            )
+
+    archived_inputs = tuple(
+        ReviewInput.model_validate_json(line)
+        for line in inputs_path.read_text(encoding="utf-8").splitlines()
+    )
+    archived_reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in reviews_path.read_text(encoding="utf-8").splitlines()
+    )
+    inputs_by_case = {item.case.case_id: item for item in archived_inputs}
+    reviews_by_case = {item.case_id: item for item in archived_reviews}
+    if len(inputs_by_case) != 8 or len(reviews_by_case) != 8:
+        raise ValueError("第二轮 Reviewer 输入与结果必须各含 8 个唯一 case_id")
+    if set(inputs_by_case) != expected_case_ids or set(reviews_by_case) != expected_case_ids:
+        raise ValueError("第二轮 Reviewer case_id 集合与修订范围不一致")
+    for case_id in sorted(expected_case_ids):
+        archived_input = inputs_by_case[case_id]
+        current_input = current_inputs_by_case[case_id]
+        review = reviews_by_case[case_id]
+        if archived_input != current_input:
+            raise ValueError(f"第二轮 Reviewer 输入不是当前目标：{case_id}")
+        if review.review_target_hash != archived_input.review_target_hash:
+            raise ValueError(f"第二轮 Reviewer 结果未绑定归档输入：{case_id}")
+        environment_chunk_ids = {
+            chunk.chunk_id
+            for chunk in (
+                archived_input.environment.visible_chunks
+                + archived_input.environment.research_chunks
+                + archived_input.environment.excluded_chunks
+            )
+        }
+        if not set(review.evidence_refs).issubset(environment_chunk_ids):
+            raise ValueError(f"第二轮 Reviewer evidence_refs 超出环境：{case_id}")
+        if review.prompt_version != ROUND2_PROMPT_VERSION:
+            raise ValueError(f"第二轮 Reviewer prompt_version 不一致：{case_id}")
+        if review.prompt_hash != ROUND2_PROMPT_HASH:
+            raise ValueError(f"第二轮 Reviewer prompt_hash 不一致：{case_id}")
+        if review.decision is not ReviewDecision.APPROVE:
+            raise ValueError(f"第二轮 Reviewer 仍有未通过候选：{case_id}")
+        if review.reviewer_confidence < 0.8:
+            raise ValueError(f"第二轮 Reviewer 置信度低于 0.8：{case_id}")
+    return archived_inputs, archived_reviews
+
+
 def build_revision_records(
-    cases: tuple[BenchmarkCase, ...], prompt_hash: str
+    cases: tuple[BenchmarkCase, ...],
+    archived_inputs: tuple[ReviewInput, ...],
+    archived_reviews: tuple[ReviewRecord, ...],
+    prompt_hash: str,
 ) -> tuple[ReviewRevisionRecord, ...]:
-    archived_inputs, archived_reviews = _load_round1_review_history(prompt_hash)
     inputs_by_case = {item.case.case_id: item for item in archived_inputs}
     reviews_by_case = {item.case_id: item for item in archived_reviews}
     records: list[ReviewRevisionRecord] = []
@@ -881,29 +958,77 @@ def build() -> None:
     review_inputs_by_case = {
         item.case.case_id: item for item in review_inputs
     }
-    revision_records = build_revision_records(cases, prompt_hash)
+    round2_case_ids = {
+        case.case_id
+        for case in cases
+        if case.base_question_id in ROUND1_REVISED_BASES
+    }
+    round1_inputs, round1_reviews = _load_round1_review_history(prompt_hash)
+    _, round2_reviews = _validate_round2_review_history(
+        review_inputs_by_case, round2_case_ids
+    )
+    revision_records = build_revision_records(
+        cases, round1_inputs, round1_reviews, prompt_hash
+    )
+    expected_reviews_by_case = {
+        review.case_id: review for review in round1_reviews
+    }
+    expected_reviews_by_case.update(
+        {review.case_id: review for review in round2_reviews}
+    )
+    expected_case_ids = {case.case_id for case in cases}
+    if set(expected_reviews_by_case) != expected_case_ids:
+        raise ValueError("两轮 Reviewer 归档无法唯一覆盖 48 条当前草稿")
+    expected_reviews = tuple(
+        expected_reviews_by_case[case_id] for case_id in sorted(expected_case_ids)
+    )
+    expected_review_bytes = _canonical_jsonl_bytes(
+        tuple(review.model_dump(mode="json") for review in expected_reviews)
+    )
     reviews_path = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
+    reviews: tuple[ReviewRecord, ...] = ()
     if reviews_path.is_file() and reviews_path.stat().st_size:
-        seen_review_ids: set[str] = set()
-        for line_number, line in enumerate(
-            reviews_path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            try:
-                review = ReviewRecord.model_validate(json.loads(line))
-            except (json.JSONDecodeError, ValueError) as error:
-                raise ValueError(
-                    f"reviews.jsonl 第 {line_number} 行无法解析"
-                ) from error
-            if review.case_id in seen_review_ids:
-                raise ValueError(f"reviews.jsonl 含重复 case_id：{review.case_id}")
-            seen_review_ids.add(review.case_id)
-            target = review_inputs_by_case.get(review.case_id)
-            if target is None:
-                raise ValueError(f"review case_id 不存在于当前草稿：{review.case_id}")
-            if review.review_target_hash != target.review_target_hash:
-                raise ValueError(
-                    f"case_id={review.case_id}: review_target_hash 与当前草稿不匹配"
-                )
+        actual_review_bytes = reviews_path.read_bytes()
+        if actual_review_bytes != expected_review_bytes:
+            raise ValueError(
+                "reviews.jsonl 必须逐字段、按 case_id 顺序精确等于两轮归档的确定性合并"
+            )
+        reviews = expected_reviews
+
+    queue_records: tuple[HumanReviewQueueRecord, ...] = ()
+    if reviews:
+        reviews_by_case = {review.case_id: review for review in reviews}
+        reviewed_cases = tuple(
+            apply_review_gate(
+                case,
+                environments_by_id[case.environment_id],
+                chunks,
+                claims,
+                reviews_by_case[case.case_id],
+            )
+            for case in cases
+        )
+        cases = reviewed_cases
+        drafts = tuple(
+            {
+                "case": case.model_dump(mode="json"),
+                "environment": environment.model_dump(mode="json"),
+            }
+            for case, environment in zip(cases, environments, strict=True)
+        )
+        queue_records = tuple(
+            HumanReviewQueueRecord(
+                case_id=case.case_id,
+                category=case.category,
+                review_target_hash=reviews_by_case[case.case_id].review_target_hash,
+                trigger="high_risk_category",
+                decision=reviews_by_case[case.case_id].decision,
+                reviewer_confidence=reviews_by_case[case.case_id].reviewer_confidence,
+                prompt_version=reviews_by_case[case.case_id].prompt_version,
+            )
+            for case in sorted(cases, key=lambda item: item.case_id)
+            if case.human_review_status is HumanReviewStatus.PENDING
+        )
 
     change_log_path = ROOT / "fixtures" / "benchmark" / "change_log.jsonl"
     _validate_change_log(change_log_path, revision_records)
@@ -928,8 +1053,10 @@ def build() -> None:
         ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl",
         tuple(item.model_dump(mode="json") for item in review_inputs),
     )
-    reviews_path.parent.mkdir(parents=True, exist_ok=True)
-    reviews_path.touch(exist_ok=True)
+    _write_jsonl(
+        ROOT / "fixtures" / "benchmark" / "human_review_queue.jsonl",
+        tuple(item.model_dump(mode="json") for item in queue_records),
+    )
 
 
 def parse_args() -> argparse.Namespace:

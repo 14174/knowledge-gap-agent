@@ -47,12 +47,19 @@ CLAIMS_PATH = ROOT / "fixtures" / "corpus" / "claims.jsonl"
 DRAFTS_PATH = ROOT / "fixtures" / "benchmark" / "drafts.jsonl"
 REVIEW_INPUTS_PATH = ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl"
 REVIEWER_PROMPT_PATH = ROOT / "fixtures" / "benchmark" / "reviewer_prompt_v1.md"
+ROUND2_PROMPT_PATH = ROOT / "fixtures" / "benchmark" / "reviewer_revision_prompt_v1.md"
 REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
+HUMAN_REVIEW_QUEUE_PATH = ROOT / "fixtures" / "benchmark" / "human_review_queue.jsonl"
 CHANGE_LOG_PATH = ROOT / "fixtures" / "benchmark" / "change_log.jsonl"
 REVIEW_HISTORY_DIR = ROOT / "fixtures" / "benchmark" / "review_history"
 ROUND1_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-1-inputs.jsonl"
 ROUND1_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-1-reviews.jsonl"
+ROUND2_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-2-inputs.jsonl"
+ROUND2_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-2-reviews.jsonl"
 PROPOSED_REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.proposed.jsonl"
+ROUND2_PROPOSED_REVIEWS_PATH = (
+    ROOT / "fixtures" / "benchmark" / "reviews.round2.proposed.jsonl"
+)
 CONTROLLED_SOURCE_PATH = (
     ROOT / "fixtures" / "sources" / "controlled" / "benchmark-distractors.md"
 )
@@ -104,15 +111,23 @@ EXPECTED_FILES = (
     DRAFTS_PATH,
     REVIEW_INPUTS_PATH,
     REVIEWER_PROMPT_PATH,
+    ROUND2_PROMPT_PATH,
     ROUND1_INPUTS_PATH,
     ROUND1_REVIEWS_PATH,
+    ROUND2_INPUTS_PATH,
+    ROUND2_REVIEWS_PATH,
     REVIEWS_PATH,
+    HUMAN_REVIEW_QUEUE_PATH,
     CHANGE_LOG_PATH,
 )
 ROUND1_INPUTS_HASH = "b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8"
 ROUND1_REVIEWS_HASH = "7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147"
 ROUND1_PROMPT_VERSION = "day2-benchmark-review-v1"
 ROUND1_PROMPT_HASH = "5f1f17ef7e6ee0c5f9ca7ebabcb560faca51b23763501e94b27a4fd9c53399b7"
+ROUND2_INPUTS_HASH = "4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3"
+ROUND2_REVIEWS_HASH = "94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d"
+ROUND2_PROMPT_VERSION = "day2-benchmark-rereview-v1"
+ROUND2_PROMPT_HASH = "6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f"
 REVISED_QUESTIONS = {
     "base-02": (
         "冻结数据模型的集合字段时，自定义不可变 list 子类为何不足，为什么选择 tuple，"
@@ -406,15 +421,51 @@ def test_simple_structural_features_have_identical_category_distributions(
         assert missing_positions[category] == expected_missing_positions
 
 
-def test_every_draft_uses_valid_pending_unreviewed_statuses(fixture_data) -> None:
+def test_every_draft_uses_review_gate_statuses(fixture_data) -> None:
     *_, cases, _ = fixture_data
 
     assert all(case.draft_status is DraftStatus.VALIDATED for case in cases)
-    assert all(case.review_status is ReviewStatus.PENDING for case in cases)
+    assert all(case.review_status is ReviewStatus.APPROVED for case in cases)
+    assert Counter(case.human_review_status for case in cases) == {
+        HumanReviewStatus.NOT_REQUIRED: 24,
+        HumanReviewStatus.PENDING: 24,
+    }
     assert all(
-        case.human_review_status is HumanReviewStatus.NOT_REQUIRED for case in cases
+        case.human_review_status
+        is (
+            HumanReviewStatus.PENDING
+            if case.category in {CaseCategory.OUTDATED, CaseCategory.CONFLICT}
+            else HumanReviewStatus.NOT_REQUIRED
+        )
+        for case in cases
     )
     assert all(len(case.required_claim_ids) == 2 for case in cases)
+
+
+def test_stored_reviewed_cases_equal_public_gate_results(fixture_data) -> None:
+    _, chunks, claims, _, cases, environments = fixture_data
+    environments_by_id = {item.environment_id: item for item in environments}
+    reviews_by_case = {
+        item.case_id: item
+        for item in (
+            ReviewRecord.model_validate_json(line)
+            for line in REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+
+    for stored_case in cases:
+        pending_case = stored_case.model_copy(update={
+            "review_status": ReviewStatus.PENDING,
+            "human_review_status": HumanReviewStatus.NOT_REQUIRED,
+        })
+        expected = apply_review_gate(
+            pending_case,
+            environments_by_id[stored_case.environment_id],
+            chunks,
+            claims,
+            reviews_by_case[stored_case.case_id],
+        )
+        assert stored_case == expected
 
 
 def test_all_models_and_dataset_rules_validate(fixture_data) -> None:
@@ -738,6 +789,133 @@ def test_round1_prompt_bytes_match_reviews_and_change_log() -> None:
     assert {record.prompt_hash for record in revision_records} == {prompt_hash}
 
 
+def test_round2_reviewer_artifacts_are_archived_verbatim_and_bound() -> None:
+    assert ROUND2_INPUTS_PATH.is_file()
+    assert ROUND2_REVIEWS_PATH.is_file()
+    assert not ROUND2_PROPOSED_REVIEWS_PATH.exists()
+    assert hashlib.sha256(ROUND2_INPUTS_PATH.read_bytes()).hexdigest() == (
+        ROUND2_INPUTS_HASH
+    )
+    assert hashlib.sha256(ROUND2_REVIEWS_PATH.read_bytes()).hexdigest() == (
+        ROUND2_REVIEWS_HASH
+    )
+    assert hashlib.sha256(ROUND2_PROMPT_PATH.read_bytes()).hexdigest() == (
+        ROUND2_PROMPT_HASH
+    )
+
+    current_lines = set(REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines())
+    archived_lines = ROUND2_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+    archived_inputs = tuple(ReviewInput.model_validate_json(line) for line in archived_lines)
+    archived_reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in ROUND2_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+    )
+    inputs_by_case = {item.case.case_id: item for item in archived_inputs}
+
+    assert len(archived_inputs) == len(archived_reviews) == 8
+    assert set(archived_lines) <= current_lines
+    assert set(inputs_by_case) == REVISED_CASE_IDS
+    assert {review.case_id for review in archived_reviews} == REVISED_CASE_IDS
+    assert all(review.decision is ReviewDecision.APPROVE for review in archived_reviews)
+    assert all(review.reviewer_confidence >= 0.8 for review in archived_reviews)
+    assert {review.prompt_version for review in archived_reviews} == {
+        ROUND2_PROMPT_VERSION
+    }
+    assert {review.prompt_hash for review in archived_reviews} == {ROUND2_PROMPT_HASH}
+    for review in archived_reviews:
+        item = inputs_by_case[review.case_id]
+        environment_chunks = {
+            chunk.chunk_id
+            for chunk in (
+                item.environment.visible_chunks
+                + item.environment.research_chunks
+                + item.environment.excluded_chunks
+            )
+        }
+        assert review.review_target_hash == item.review_target_hash
+        assert set(review.evidence_refs) <= environment_chunks
+
+
+def test_current_reviews_merge_round1_unchanged_and_round2_revised() -> None:
+    current_lines = REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+    current = tuple(ReviewRecord.model_validate_json(line) for line in current_lines)
+    round1 = {
+        item.case_id: item
+        for item in (
+            ReviewRecord.model_validate_json(line)
+            for line in ROUND1_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    round2 = {
+        item.case_id: item
+        for item in (
+            ReviewRecord.model_validate_json(line)
+            for line in ROUND2_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+    current_inputs = {
+        item.case.case_id: item
+        for item in (
+            ReviewInput.model_validate_json(line)
+            for line in REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+
+    assert len(current) == 48
+    assert [item.case_id for item in current] == sorted(item.case_id for item in current)
+    assert all(line == canonical_json(json.loads(line)) for line in current_lines)
+    assert {item.case_id for item in current} == set(current_inputs)
+    for review in current:
+        expected = round2.get(review.case_id, round1[review.case_id])
+        assert review == expected
+        assert review.review_target_hash == current_inputs[review.case_id].review_target_hash
+    assert all(review.decision is ReviewDecision.APPROVE for review in current)
+    assert all(review.reviewer_confidence >= 0.8 for review in current)
+    assert Counter(review.prompt_version for review in current) == {
+        ROUND1_PROMPT_VERSION: 40,
+        ROUND2_PROMPT_VERSION: 8,
+    }
+
+
+def test_human_review_queue_contains_only_high_risk_pending_cases() -> None:
+    cases = tuple(
+        BenchmarkCase.model_validate(row["case"])
+        for row in read_jsonl(DRAFTS_PATH)
+    )
+    queue_model = getattr(review_module, "HumanReviewQueueRecord")
+    queue_lines = HUMAN_REVIEW_QUEUE_PATH.read_text(encoding="utf-8").splitlines()
+    queue = tuple(queue_model.model_validate_json(line) for line in queue_lines)
+    reviews = {
+        review.case_id: review
+        for review in (
+            ReviewRecord.model_validate_json(line)
+            for line in REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+
+    assert len(queue) == 24
+    assert [item.case_id for item in queue] == sorted(item.case_id for item in queue)
+    assert {item.case_id for item in queue} == {
+        case.case_id
+        for case in cases
+        if case.category in {CaseCategory.OUTDATED, CaseCategory.CONFLICT}
+    }
+    assert all(item.trigger == "high_risk_category" for item in queue)
+    assert all(item.decision is ReviewDecision.APPROVE for item in queue)
+    assert all(item.category in {CaseCategory.OUTDATED, CaseCategory.CONFLICT} for item in queue)
+    assert all(item.review_target_hash == reviews[item.case_id].review_target_hash for item in queue)
+    assert all(item.reviewer_confidence == reviews[item.case_id].reviewer_confidence for item in queue)
+    assert all(item.prompt_version == reviews[item.case_id].prompt_version for item in queue)
+    assert all(
+        set(json.loads(line))
+        == {
+            "case_id", "category", "review_target_hash", "trigger", "decision",
+            "reviewer_confidence", "prompt_version",
+        }
+        for line in queue_lines
+    )
+
+
 def test_first_revision_changes_exactly_eight_review_targets(fixture_data) -> None:
     _, _, _, _, cases, _ = fixture_data
     current_inputs = {
@@ -1010,6 +1188,10 @@ def test_pending_fixture_review_can_apply_gate_then_freeze_without_rebinding(
 ) -> None:
     _, chunks, claims, _, cases, environments = fixture_data
     case = next(item for item in cases if item.category is CaseCategory.LOCAL_SUFFICIENT)
+    case = case.model_copy(update={
+        "review_status": ReviewStatus.PENDING,
+        "human_review_status": HumanReviewStatus.NOT_REQUIRED,
+    })
     environment = next(
         item for item in environments if item.environment_id == case.environment_id
     )
@@ -1052,6 +1234,10 @@ def test_high_risk_review_may_cite_controlled_environment_chunk(
     _, chunks, claims, _, cases, environments = fixture_data
     chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     case = next(item for item in cases if item.category is category)
+    case = case.model_copy(update={
+        "review_status": ReviewStatus.PENDING,
+        "human_review_status": HumanReviewStatus.NOT_REQUIRED,
+    })
     environment = next(
         item for item in environments if item.environment_id == case.environment_id
     )
@@ -1094,31 +1280,29 @@ def test_high_risk_review_may_cite_controlled_environment_chunk(
     assert result.case_count == 1
 
 
-def test_rebuild_rejects_stale_nonempty_reviews_without_overwriting(fixture_data) -> None:
-    *_, cases, environments = fixture_data
-    del environments
-    case = cases[0]
-    original = REVIEWS_PATH.read_bytes()
-    stale = ReviewRecord(
-        case_id=case.case_id,
-        review_target_hash="0" * 64,
-        decision="approve",
-        issues=(),
-        suggested_changes=(),
-        evidence_refs=(case.evidence_chunk_ids[0],),
-        reviewer_confidence=0.9,
-        labeler_reasoning_seen=False,
-        prior_rule_failure_count=0,
-        prompt_version="review-v1",
-        prompt_hash="a" * 64,
-        model_provider="provider",
-        model_name="reviewer",
-        model_revision="r1",
-        reviewed_at="2026-09-24T00:00:00+08:00",
-    )
-    stale_bytes = (canonical_json(stale.model_dump(mode="json")) + "\n").encode("utf-8")
+@pytest.mark.parametrize("damage", ("partial", "extra", "stale"))
+def test_rebuild_rejects_invalid_review_set_before_writing_outputs(damage: str) -> None:
+    original_reviews = REVIEWS_PATH.read_bytes()
+    original_drafts = DRAFTS_PATH.read_bytes()
+    queue_existed = HUMAN_REVIEW_QUEUE_PATH.exists()
+    original_queue = HUMAN_REVIEW_QUEUE_PATH.read_bytes() if queue_existed else b""
+    rows = [json.loads(line) for line in original_reviews.decode("utf-8").splitlines()]
+    if damage == "partial":
+        rows = rows[:-1]
+    elif damage == "extra":
+        extra = dict(rows[0])
+        extra["case_id"] = "case-extra-review"
+        rows.append(extra)
+    else:
+        rows[0] = dict(rows[0])
+        rows[0]["review_target_hash"] = "0" * 64
+    invalid_reviews = "".join(f"{canonical_json(row)}\n" for row in rows).encode("utf-8")
+    drafts_sentinel = b"test sentinel: invalid reviews must fail before writes\n"
+    queue_sentinel = b"test sentinel: queue must not be overwritten\n"
     try:
-        REVIEWS_PATH.write_bytes(stale_bytes)
+        REVIEWS_PATH.write_bytes(invalid_reviews)
+        DRAFTS_PATH.write_bytes(drafts_sentinel)
+        HUMAN_REVIEW_QUEUE_PATH.write_bytes(queue_sentinel)
         result = subprocess.run(
             [sys.executable, str(SCRIPT)],
             cwd=ROOT,
@@ -1127,13 +1311,155 @@ def test_rebuild_rejects_stale_nonempty_reviews_without_overwriting(fixture_data
             check=False,
         )
         assert result.returncode != 0
-        assert "review_target_hash" in result.stderr
-        assert REVIEWS_PATH.read_bytes() == stale_bytes
+        assert REVIEWS_PATH.read_bytes() == invalid_reviews
+        assert DRAFTS_PATH.read_bytes() == drafts_sentinel
+        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == queue_sentinel
     finally:
-        REVIEWS_PATH.write_bytes(original)
+        REVIEWS_PATH.write_bytes(original_reviews)
+        DRAFTS_PATH.write_bytes(original_drafts)
+        if queue_existed:
+            HUMAN_REVIEW_QUEUE_PATH.write_bytes(original_queue)
+        elif HUMAN_REVIEW_QUEUE_PATH.exists():
+            HUMAN_REVIEW_QUEUE_PATH.unlink()
 
 
-def test_jsonl_is_canonical_and_reviewer_outputs_remain_empty(fixture_data) -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "prompt_version",
+        "prompt_hash",
+        "model_provider",
+        "model_name",
+        "model_revision",
+        "reviewed_at",
+        "decision",
+        "confidence",
+        "evidence_refs",
+        "order",
+        "noncanonical",
+    ),
+)
+def test_rebuild_rejects_reviews_different_from_archived_merge_before_writes(
+    mutation: str,
+) -> None:
+    original_reviews = REVIEWS_PATH.read_bytes()
+    original_drafts = DRAFTS_PATH.read_bytes()
+    original_queue = HUMAN_REVIEW_QUEUE_PATH.read_bytes()
+    rows = [json.loads(line) for line in original_reviews.decode("utf-8").splitlines()]
+    inputs_by_case = {
+        item.case.case_id: item
+        for item in (
+            ReviewInput.model_validate_json(line)
+            for line in REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+        )
+    }
+
+    if mutation == "order":
+        rows[0], rows[1] = rows[1], rows[0]
+    elif mutation == "noncanonical":
+        pass
+    else:
+        row = rows[0]
+        if mutation == "prompt_version":
+            row["prompt_version"] = "tampered-prompt-version"
+        elif mutation == "prompt_hash":
+            row["prompt_hash"] = "f" * 64
+        elif mutation == "model_provider":
+            row["model_provider"] = "tampered-provider"
+        elif mutation == "model_name":
+            row["model_name"] = "tampered-model"
+        elif mutation == "model_revision":
+            row["model_revision"] = "tampered-revision"
+        elif mutation == "reviewed_at":
+            row["reviewed_at"] = "2026-09-24T23:59:59+08:00"
+        elif mutation == "decision":
+            row["decision"] = "revise"
+            row["issues"] = ["攻击回归中的合法修订理由"]
+            row["suggested_changes"] = ["攻击回归中的合法修订建议"]
+        elif mutation == "confidence":
+            row["reviewer_confidence"] = 0.81
+        else:
+            review_input = inputs_by_case[row["case_id"]]
+            environment_chunk_ids = tuple(
+                chunk.chunk_id
+                for chunk in (
+                    review_input.environment.visible_chunks
+                    + review_input.environment.research_chunks
+                    + review_input.environment.excluded_chunks
+                )
+            )
+            row["evidence_refs"] = [
+                chunk_id
+                for chunk_id in environment_chunk_ids
+                if chunk_id not in row["evidence_refs"]
+            ][:1]
+            assert row["evidence_refs"]
+        ReviewRecord.model_validate(row)
+
+    invalid_reviews = "".join(
+        f"{canonical_json(row)}\n" for row in rows
+    ).encode("utf-8")
+    if mutation == "noncanonical":
+        invalid_reviews = invalid_reviews.replace(b'{"case_id"', b'{ "case_id"', 1)
+    drafts_sentinel = b"test sentinel: archived merge mismatch must fail before writes\n"
+    queue_sentinel = b"test sentinel: archived merge mismatch must preserve queue\n"
+    try:
+        REVIEWS_PATH.write_bytes(invalid_reviews)
+        DRAFTS_PATH.write_bytes(drafts_sentinel)
+        HUMAN_REVIEW_QUEUE_PATH.write_bytes(queue_sentinel)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert REVIEWS_PATH.read_bytes() == invalid_reviews
+        assert DRAFTS_PATH.read_bytes() == drafts_sentinel
+        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == queue_sentinel
+    finally:
+        REVIEWS_PATH.write_bytes(original_reviews)
+        DRAFTS_PATH.write_bytes(original_drafts)
+        HUMAN_REVIEW_QUEUE_PATH.write_bytes(original_queue)
+
+
+def test_empty_reviews_keep_pending_drafts_and_empty_human_queue() -> None:
+    original_reviews = REVIEWS_PATH.read_bytes()
+    try:
+        REVIEWS_PATH.write_bytes(b"")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        pending_cases = tuple(
+            BenchmarkCase.model_validate(row["case"])
+            for row in read_jsonl(DRAFTS_PATH)
+        )
+        assert REVIEWS_PATH.read_bytes() == b""
+        assert all(case.review_status is ReviewStatus.PENDING for case in pending_cases)
+        assert all(
+            case.human_review_status is HumanReviewStatus.NOT_REQUIRED
+            for case in pending_cases
+        )
+        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == b""
+    finally:
+        REVIEWS_PATH.write_bytes(original_reviews)
+        restore = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert restore.returncode == 0, restore.stderr
+
+
+def test_jsonl_is_canonical_and_reviewer_outputs_are_separated(fixture_data) -> None:
     _, _, _, drafts, _, _ = fixture_data
     assert all(set(draft) == {"case", "environment"} for draft in drafts)
     for path in (
@@ -1142,16 +1468,22 @@ def test_jsonl_is_canonical_and_reviewer_outputs_remain_empty(fixture_data) -> N
         CLAIMS_PATH,
         DRAFTS_PATH,
         REVIEW_INPUTS_PATH,
+        REVIEWS_PATH,
+        HUMAN_REVIEW_QUEUE_PATH,
         CHANGE_LOG_PATH,
         ROUND1_INPUTS_PATH,
         ROUND1_REVIEWS_PATH,
+        ROUND2_INPUTS_PATH,
+        ROUND2_REVIEWS_PATH,
     ):
         lines = path.read_text(encoding="utf-8").splitlines()
         assert lines
         assert all(line == canonical_json(json.loads(line)) for line in lines)
-    assert REVIEWS_PATH.read_bytes() == b""
+    assert len(REVIEWS_PATH.read_text(encoding="utf-8").splitlines()) == 48
+    assert len(HUMAN_REVIEW_QUEUE_PATH.read_text(encoding="utf-8").splitlines()) == 24
     assert len(CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()) == 2
     assert not PROPOSED_REVIEWS_PATH.exists()
+    assert not ROUND2_PROPOSED_REVIEWS_PATH.exists()
 
 
 def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> None:
@@ -1165,7 +1497,10 @@ def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> Non
         REVIEW_INPUTS_PATH,
         ROUND1_INPUTS_PATH,
         ROUND1_REVIEWS_PATH,
+        ROUND2_INPUTS_PATH,
+        ROUND2_REVIEWS_PATH,
         REVIEWS_PATH,
+        HUMAN_REVIEW_QUEUE_PATH,
         CHANGE_LOG_PATH,
     )
     before = {path: path.read_bytes() for path in generated}

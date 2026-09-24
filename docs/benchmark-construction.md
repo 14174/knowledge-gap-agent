@@ -2,7 +2,7 @@
 
 ## 1. 范围与状态
 
-本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`，已连同当时输入归档到 `review_history/`；质量审计确认相同问题必要性缺陷还影响 base-02、base-08 的两条 `local_sufficient`，因此本轮实际修订 8 条。当前 `reviews.jsonl` 仍为空，`change_log.jsonl` 只记录两组非人工修订；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
+本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`；质量审计把实际修订范围扩为 base-02、base-08 共 8 条，第二轮对这 8 条全部 `approve`。当前 `reviews.jsonl` 由首轮未变化的 40 条与第二轮 8 条真实记录合并，最终 48 条模型复核均为 `approve`；24 条高风险类别进入 `human_review_queue.jsonl`，仍待真实人工审核。`change_log.jsonl` 仍只有两组非人工修订；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
 
 构建时间统一固定为 `2026-09-24T00:00:00+08:00`。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
 
@@ -88,7 +88,7 @@
 - `token_terms` 使用项目确定性中文二元字组与英文词项分词器。
 - 主张先建立到证据块的映射，再通过 `model_copy(update=...)` 回填块的 `claim_ids` 与 `token_terms`。
 - 每行草稿严格为 `{"case": ..., "environment": ...}` 的规范 JSON。
-- 所有 case 当前为 `draft_status=validated`、`review_status=pending`、`human_review_status=not_required`。最后一个状态只表示复核前尚未执行人工升级规则，不代表人工通过。
+- 所有 case 当前为 `draft_status=validated`、`review_status=approved`。24 条 `local_sufficient`、`local_partial` 为 `human_review_status=not_required`；12 条 `outdated` 与 12 条 `conflict` 为 `human_review_status=pending`。这些状态来自可信 `apply_review_gate`，不代表人工通过。
 - `build_runtime_payload` 只构造供评测器关联数据的冻结信封，允许保留不透明关联编号；该信封不得原样传给决策模型。
 - `build_model_input_payload` 采用独立白名单，只输出问题与按环境顺序解析的可见知识正文；入口重新验证 case、environment 和 chunk，校验 case/environment 配对，并在模型调用前拒绝未知或重复块引用。
 - `review_inputs.jsonl` 由 Pydantic 白名单确定性生成，包含待审 case、环境三池正文和相关主张证据，不包含 `annotation_reason`、`review_status`、`human_review_status`、Labeler 长推理或任何复核结论。
@@ -115,12 +115,14 @@
 - 每条磁盘 Reviewer 输入通过 `ReviewInput.model_validate_json` 自校验；问题、块正文、主张陈述或哈希任一被改写都会拒绝；
 - ReviewRecord、复核门禁和冻结路径均从可信 chunks/claims 重建 Reviewer 实际可见输入；问题、答案键、类别、`draft_status`、环境池、块正文或相关主张变化会使旧复核失效，三个明确排除字段不改变哈希；
 - Reviewer 输入字段集合与 case/environment/chunk/claim 模型字段集合逐项核对，未显式分类的新字段会早拒绝；`evidence_refs` 只允许落在对应环境三池并集，受控过时/冲突块可以被引用，环境外块拒绝；
+- 当前 reviews 必须恰有 48 个唯一 case ID 并与当前草稿集合精确一致；每条都通过可信 `apply_review_gate` 重算目标与证据边界，partial、extra 或 stale 集合在任何产物写盘前拒绝；
+- 人工队列只包含门禁后 `human_review_status=pending` 的 24 条高风险候选，并保留类别、目标哈希、触发原因、真实模型决策、置信度和提示词版本，不包含人工批准字段；
 - 清单校验无错误，所有 JSONL 使用规范 JSON；
 - 无外部来源重跑后，所有生成文件字节不变。
 
 ## 7. Reviewer 隔离与人工门禁
 
-独立 Reviewer 只接收 `review_inputs.jsonl` 中的基础问题、环境三池正文、主张、证据和结构化草稿，不接收 `annotation_reason`、`review_status`、`human_review_status` 或 Labeler 的隐藏推理文本。后两个状态是复核及人工门禁输出。Reviewer 返回的 `review_target_hash` 必须来自对应输入。当前 `reviews.jsonl` 保持零字节，留给修订后的独立复审；脚本不会把首轮意见伪装成当前结论，也不会伪造人工批准。
+独立 Reviewer 只接收 `review_inputs.jsonl` 中的基础问题、环境三池正文、主张、证据和结构化草稿，不接收 `annotation_reason`、`review_status`、`human_review_status` 或 Labeler 的隐藏推理文本。后两个状态是复核及人工门禁输出。Reviewer 返回的 `review_target_hash` 必须来自对应输入。脚本保留每条复核的真实轮次、时间、置信度和提示词身份，不把模型结论写成人工批准。
 
 ### 7.1 首轮复核修订
 
@@ -131,6 +133,12 @@
 - 原 Reviewer 标记 6 条 `revise`；质量审计补充两组的 `local_sufficient`，实际修订为两个基础问题各 4 条，共 8 条。只改问题及由问题参与计算的目标哈希，来源、claims、证据、case ID 和 environment ID 均不变。
 - 两条 `change_log.jsonl` 记录的 `actor` 是独立 Reviewer 与质量审计，`human_approved=false`。本轮不是人工终审，修订后 48 条输入仍需独立复审。
 - `change_log.jsonl` 是版本化非空夹具，初始化只允许通过受审提交或人工流程完成，不属于构建器。构建器绝不创建、初始化或写入该文件；它在其他产物写盘前只读验证精确前缀、终止 LF 和所有后续行均为规范 JSON 对象。缺失或零字节视为损坏，前缀后的人工追加记录归人工流程所有并逐字节保留。
+
+### 7.2 第二轮复核与模型门禁
+
+第二轮只复核修订后的 8 条输入。输入原始行和 Reviewer 原输出分别归档为 `review_history/round-2-inputs.jsonl`、`round-2-reviews.jsonl`，SHA-256 为 `4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3`、`94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d`。提示词 `reviewer_revision_prompt_v1.md` 的原始字节 SHA-256 为 `6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f`；8 条记录均使用 `day2-benchmark-rereview-v1`，全部 `approve` 且置信度不低于 `0.8`。
+
+当前 `reviews.jsonl` 不是任意一组结构合法、目标哈希匹配的 ReviewRecord，而是唯一的归档合并：修订 8 条必须逐对象取第二轮原记录，其余 40 条必须逐对象取首轮原记录，再按 `case_id` 排序并写成规范 JSONL。构建器现场校验两份提示词原始字节哈希，从两轮归档加载记录并重建预期字节；非空 `reviews.jsonl` 只有与该预期逐字节一致时才进入 `apply_review_gate`。因此提示词身份、模型身份、复核时间、结论、置信度、环境内证据引用、顺序或 JSON 格式任一漂移都会在写盘前拒绝。若 reviews 为空，则草稿保持 `pending` 且人工队列为空。
 
 Reviewer 完成后，所有 `outdated` 和 `conflict` 样本、置信度低于 `0.8` 的样本、`revise`、`reject` 或曾经规则失败的样本都必须进入人工审核。自动阶段只能把人工状态改为 `pending` 或 `not_required`，不得写入人工 `approved`。人工修改必须追加到 `change_log.jsonl`，不得覆盖旧记录。
 
@@ -147,7 +155,7 @@ uv run python scripts/build_day2_fixtures.py --seed-source-root <固定只读克
 ```powershell
 uv run python scripts/build_day2_fixtures.py
 uv run python -m pytest tests/benchmark/test_fixture_dataset.py -v
-Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl,fixtures/benchmark/change_log.jsonl,fixtures/benchmark/review_history/round-1-inputs.jsonl,fixtures/benchmark/review_history/round-1-reviews.jsonl
+Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl,fixtures/benchmark/reviews.jsonl,fixtures/benchmark/human_review_queue.jsonl,fixtures/benchmark/change_log.jsonl,fixtures/benchmark/review_history/round-1-inputs.jsonl,fixtures/benchmark/review_history/round-1-reviews.jsonl,fixtures/benchmark/review_history/round-2-inputs.jsonl,fixtures/benchmark/review_history/round-2-reviews.jsonl
 ```
 
 本次构建的文件哈希为：
@@ -158,8 +166,12 @@ Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/do
 | `fixtures/corpus/documents.jsonl` | `7b1f07d877ade7d0b1090c3ce39d9710fa2085f60b3f04dad2faeb1a614a4dd5` |
 | `fixtures/corpus/chunks.jsonl` | `91eb2c7272286eff9eaa641a51e07ad6ff597f639d4f170d903644852429bcd7` |
 | `fixtures/corpus/claims.jsonl` | `d59426b529d632ca4036a04172f1b72077e471b31613f4761bfd7031732c4666` |
-| `fixtures/benchmark/drafts.jsonl` | `79a947b1fdc347f77a34a58e6b3a4bfa88fa24b78764321a0618684e17f3b994` |
+| `fixtures/benchmark/drafts.jsonl` | `b101467a9da808f4e630965154c14293a22149e0f7326b7cb1f252f882847d55` |
 | `fixtures/benchmark/review_inputs.jsonl` | `d7a734e4b9b23e8c0977f47f3491efd63776ecd160a2e02a4886c40191e20b10` |
+| `fixtures/benchmark/reviews.jsonl` | `6ca3d1735e74ea0afca0bbe9a18e0bb8119dddfb6b6c40168aa9e3c9d819705e` |
+| `fixtures/benchmark/human_review_queue.jsonl` | `d06cb65dc173eeaa9f10c9d250b5991b8848004e39fcdb42500baf333c7279ed` |
 | `fixtures/benchmark/change_log.jsonl` | `5a5c0ec55530ee97e1ccd440994388139a4b6c82e0270a4cc0edac90d46dfa02` |
 | `fixtures/benchmark/review_history/round-1-inputs.jsonl` | `b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8` |
 | `fixtures/benchmark/review_history/round-1-reviews.jsonl` | `7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147` |
+| `fixtures/benchmark/review_history/round-2-inputs.jsonl` | `4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3` |
+| `fixtures/benchmark/review_history/round-2-reviews.jsonl` | `94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d` |

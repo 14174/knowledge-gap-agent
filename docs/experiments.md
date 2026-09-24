@@ -21,4 +21,24 @@ Reviewer 原样输出为 42 条 `approve`、6 条 `revise`。6 条 `revise` 均�
 
 ### 状态与后续
 
-两条审计记录均标记 `human_approved=false`。当前 `reviews.jsonl` 为空，未生成正式冻结文件；下一步是对修订后的 48 条输入执行第二轮独立复审，再按既有规则进入人工终审或抽检。
+两条审计记录均标记 `human_approved=false`。首轮修订完成时 `reviews.jsonl` 为空，尚未生成正式冻结文件；随后进入第二轮独立复审。
+
+## 2026-09-24：修订候选第二轮复核与模型门禁
+
+### 目的与输入
+
+第二轮仅复核 base-02、base-08 修订后的 8 条当前输入。归档输入 SHA-256 为 `4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3`，Reviewer 原输出 SHA-256 为 `94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d`。提示词版本为 `day2-benchmark-rereview-v1`，提示词原始字节 SHA-256 为 `6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f`。
+
+### 结果
+
+第二轮 8 条全部为模型 `approve`，无 `revise` 或 `reject`，置信度均不低于 `0.8`。与首轮未变化的 40 条合并后，当前 48 条 reviews 全部为模型 `approve`，最低置信度为 `0.95`。构建器使用可信 `apply_review_gate` 逐条执行门禁，结果为：
+
+当前 48 条复核的合并规则是归档唯一映射，不接受任意合法替代记录：8 条修订 case 原样取第二轮记录，其余 40 条原样取首轮记录，按 `case_id` 排序为规范 JSONL。构建时先核对两轮提示词实际文件哈希和归档，再对 `reviews.jsonl` 做整文件字节比对，最后才执行模型门禁。
+
+- 48 条 `review_status=approved`；
+- 24 条 `local_sufficient`、`local_partial` 为 `human_review_status=not_required`；
+- 12 条 `outdated` 与 12 条 `conflict` 为 `human_review_status=pending`，全部进入人工复核队列。
+
+### 状态与限制
+
+上述数字仅描述固定候选集的复核流程，不是 Runtime 性能、成本收益或简历结果数字。当前 24 条高风险候选仍未获得人工批准，`change_log.jsonl` 未追加人工结论，也未生成正式 `runtime`、`labels`、`audit` 或冻结基准。
