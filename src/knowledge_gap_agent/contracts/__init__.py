@@ -1,8 +1,15 @@
 from .config import ExperimentVariant, RunConfig
-from .benchmark import BenchmarkCase, CaseCategory
+from .benchmark import (
+    BenchmarkCase,
+    CaseCategory,
+    DraftStatus,
+    HumanReviewStatus,
+    ReviewStatus,
+)
 from .trace import EventStatus, EventType, TokenUsage, TraceEvent
 
 __all__ = [
-    "ExperimentVariant", "RunConfig", "BenchmarkCase", "CaseCategory",
+    "ExperimentVariant", "RunConfig", "BenchmarkCase", "CaseCategory", "DraftStatus",
+    "HumanReviewStatus", "ReviewStatus",
     "EventStatus", "EventType", "TokenUsage", "TraceEvent",
 ]
