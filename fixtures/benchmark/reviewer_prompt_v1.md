@@ -6,9 +6,11 @@
 
 只允许读取以下内容：
 
-1. 本提示词。
-2. `fixtures/benchmark/review_inputs.jsonl`。
-3. `src/knowledge_gap_agent/benchmark/review.py` 中 `ReviewInput`、`ReviewRecord` 与门禁契约。
+1. 根目录 `AGENTS.md`。
+2. `docs/TODO.md`、`docs/decisions.md` 与第二天语料基准设计书；这些文件只用于遵守工程流程，不得作为单条样本的语义证据。
+3. 本提示词。
+4. `fixtures/benchmark/review_inputs.jsonl`。
+5. `src/knowledge_gap_agent/benchmark/review.py` 中 `ReviewInput`、`ReviewRecord` 与门禁契约。
 
 禁止读取 `fixtures/benchmark/drafts.jsonl`、`scripts/build_day2_fixtures.py`、`docs/benchmark-construction.md` 或其他包含标注构造理由的材料。不得推断或声称看过标注 Agent 的推理。
 
