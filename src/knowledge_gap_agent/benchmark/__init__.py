@@ -15,9 +15,11 @@ from knowledge_gap_agent.benchmark.validation import (
     validate_case,
     validate_dataset,
 )
+from knowledge_gap_agent.benchmark.freeze import FreezeResult, freeze_benchmark
 
 __all__ = [
     "LABEL_FIELDS", "KnowledgeEnvironment", "ValidationIssue", "build_runtime_payload",
     "ReviewDecision", "ReviewRecord", "apply_review_gate", "compute_environment_hash",
-    "requires_human_review", "validate_case", "validate_dataset",
+    "FreezeResult", "freeze_benchmark", "requires_human_review", "validate_case",
+    "validate_dataset",
 ]
