@@ -224,3 +224,36 @@ def build_runtime_payload(case: BenchmarkCase, environment: KnowledgeEnvironment
         "environment_id": case.environment_id,
         "visible_chunk_ids": list(environment.visible_chunk_ids),
     }
+
+
+def build_model_input_payload(
+    case: BenchmarkCase,
+    environment: KnowledgeEnvironment,
+    chunks: Iterable[CorpusChunk],
+) -> dict[str, object]:
+    case = BenchmarkCase.model_validate(case.model_dump(mode="python"))
+    environment = KnowledgeEnvironment.model_validate(environment.model_dump(mode="python"))
+    chunks = tuple(
+        CorpusChunk.model_validate(chunk.model_dump(mode="python")) for chunk in chunks
+    )
+    if case.environment_id != environment.environment_id:
+        raise ValueError("case environment does not match supplied environment")
+
+    visible_chunk_ids = tuple(environment.visible_chunk_ids)
+    if len(visible_chunk_ids) != len(set(visible_chunk_ids)):
+        raise ValueError("duplicate visible chunk reference")
+
+    chunks_by_id: dict[str, CorpusChunk] = {}
+    for chunk in chunks:
+        if chunk.chunk_id in chunks_by_id:
+            raise ValueError(f"duplicate corpus chunk id: {chunk.chunk_id}")
+        chunks_by_id[chunk.chunk_id] = chunk
+
+    missing = [chunk_id for chunk_id in visible_chunk_ids if chunk_id not in chunks_by_id]
+    if missing:
+        raise ValueError(f"visible chunk not found: {missing[0]}")
+
+    return {
+        "question": case.question,
+        "visible_knowledge": [chunks_by_id[chunk_id].text for chunk_id in visible_chunk_ids],
+    }

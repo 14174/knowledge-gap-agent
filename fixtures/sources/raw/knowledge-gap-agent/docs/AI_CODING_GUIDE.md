@@ -119,13 +119,12 @@ uv run python -m pytest -q
 ### 4.4 运行、标签与审计隔离
 
 ```text
-runtime.jsonl               → 评测器关联信封，可保留样本、基础问题、环境和可见块编号
-build_model_input_payload() → 决策模型输入，只含问题和按环境顺序解析的可见知识正文
-labels.jsonl                → 评测器读取的真值
-audit.jsonl                 → 来源、复核、人工结论和构造记录
+runtime.jsonl  → Agent 可见输入
+labels.jsonl   → 评测器读取的真值
+audit.jsonl    → 来源、复核、人工结论和构造记录
 ```
 
-冻结运行文件是评测器信封，不得原样传给决策模型。评测器先用其中的编号关联环境和语料，再调用独立字段白名单构造模型输入；模型不得接收任何样本、基础问题、环境或块编号，也不得接收类别、研究决策、必需或缺失主张等标签信息。模型输入公共入口先通过 `model_validate(model_dump(mode="python"))` 重验 case、environment 和每个 chunk，再校验 case 与 environment 配对，禁止不校验的复制对象绕过哈希和必填字段约束。两层载荷都不得采用“先序列化完整对象再删除几个字段”的黑名单方式。新增 Benchmark 字段时必须检查 `LABEL_FIELDS`、冻结输出、模型输入白名单和泄漏测试。
+运行载荷采用字段白名单构造，不采用“先序列化完整对象再删除几个字段”的黑名单方式。新增 Benchmark 字段时必须检查 `LABEL_FIELDS`、冻结输出和泄漏测试。
 
 ## 5. 开发流程
 

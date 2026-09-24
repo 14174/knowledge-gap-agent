@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from knowledge_gap_agent.benchmark import (
     LABEL_FIELDS,
     KnowledgeEnvironment,
+    build_model_input_payload,
     build_runtime_payload,
     compute_environment_hash,
     validate_case,
@@ -295,6 +296,61 @@ def test_runtime_payload_has_no_label_or_audit_fields():
     assert {"category", "local_knowledge_ids", "answer_key", "required_claim_ids",
             "missing_claim_ids", "evidence_chunk_ids",
             "annotation_reason", "draft_status", "review_status", "human_review_status"} <= LABEL_FIELDS
+
+
+def test_model_input_payload_contains_only_question_and_visible_text_in_environment_order():
+    case = make_case(question="如何处理？")
+    environment = make_environment(
+        visible_chunk_ids=["a-visible", "b-visible"],
+        research_chunk_ids=["research"],
+        excluded_chunk_ids=["excluded"],
+    )
+    chunks = (
+        make_chunk("b-visible", ()),
+        make_chunk("excluded", ()),
+        make_chunk("a-visible", ()),
+        make_chunk("research", ()),
+    )
+
+    assert build_model_input_payload(case, environment, chunks) == {
+        "question": "如何处理？",
+        "visible_knowledge": ["text-a-visible", "text-b-visible"],
+    }
+
+
+def test_model_input_payload_rejects_unknown_and_duplicate_chunk_references():
+    case = make_case()
+    chunks = (make_chunk("visible", ()),)
+
+    with pytest.raises(ValueError, match="visible chunk.*missing"):
+        build_model_input_payload(case, make_environment(visible_chunk_ids=["missing"]), chunks)
+
+    duplicate_reference = make_environment().model_copy(
+        update={"visible_chunk_ids": ("visible", "visible")}
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        build_model_input_payload(case, duplicate_reference, chunks)
+
+    with pytest.raises(ValueError, match="duplicate corpus chunk id"):
+        build_model_input_payload(case, make_environment(), (chunks[0], chunks[0]))
+
+
+def test_model_input_payload_revalidates_case_environment_and_chunks():
+    case = make_case()
+    environment = make_environment()
+    chunks = (make_chunk("visible", ()),)
+
+    wrong_environment = make_environment(environment_id="other-environment")
+    with pytest.raises(ValueError, match="case environment does not match"):
+        build_model_input_payload(case, wrong_environment, chunks)
+
+    tampered_chunk = chunks[0].model_copy(update={"text": "篡改后仍保留旧哈希"})
+    with pytest.raises(ValidationError, match="content_hash"):
+        build_model_input_payload(case, environment, (tampered_chunk,))
+
+    empty_question = case.model_copy(update={"question": ""})
+    with pytest.raises(ValidationError, match="question"):
+        build_model_input_payload(empty_question, environment, chunks)
 
 
 def test_validate_dataset_reports_duplicate_keys_and_missing_environment():
