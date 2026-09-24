@@ -12,9 +12,18 @@ from knowledge_gap_agent.benchmark import (
     ReviewDecision,
     ReviewRecord,
     compute_environment_hash,
-    freeze_benchmark,
+    compute_review_target_hash,
 )
-from knowledge_gap_agent.contracts.benchmark import BenchmarkCase
+from knowledge_gap_agent.benchmark.freeze import freeze_benchmark as freeze_with_corpus
+from knowledge_gap_agent.contracts.benchmark import (
+    BenchmarkCase,
+    CaseCategory,
+    DraftStatus,
+    HumanReviewStatus,
+    ReviewStatus,
+)
+from knowledge_gap_agent.corpus.models import Claim, CorpusChunk
+from knowledge_gap_agent.corpus.normalize import content_hash
 
 
 def environment(case_id: str = "case-b") -> KnowledgeEnvironment:
@@ -44,9 +53,74 @@ def case(case_id: str = "case-b", **overrides: object) -> BenchmarkCase:
     return BenchmarkCase(**values)
 
 
-def review(case_id: str = "case-b", **overrides: object) -> ReviewRecord:
+def corpus_for_pairs(
+    pairs: list[tuple[BenchmarkCase, KnowledgeEnvironment]]
+    | tuple[tuple[BenchmarkCase, KnowledgeEnvironment], ...],
+) -> tuple[tuple[CorpusChunk, ...], tuple[Claim, ...]]:
+    chunks: dict[str, CorpusChunk] = {}
+    claims: dict[str, Claim] = {}
+    for target_case, target_environment in pairs:
+        for chunk_id in (
+            target_environment.visible_chunk_ids
+            + target_environment.research_chunk_ids
+            + target_environment.excluded_chunk_ids
+        ):
+            text = f"正文 {chunk_id}"
+            chunks[chunk_id] = CorpusChunk(
+                chunk_id=chunk_id,
+                source_id="source",
+                heading_path=("标题",),
+                start_line=1,
+                end_line=1,
+                text=text,
+                token_terms=(),
+                content_hash=content_hash(text),
+                claim_ids=(
+                    target_case.required_claim_ids
+                    if chunk_id in target_case.evidence_chunk_ids
+                    else ()
+                ),
+            )
+        for claim_id in target_case.required_claim_ids:
+            claims[claim_id] = Claim(
+                claim_id=claim_id,
+                statement="主张",
+                evidence_chunk_ids=target_case.evidence_chunk_ids,
+                valid_from=None,
+                valid_until=None,
+                conflicts_with=(),
+            )
+    return tuple(chunks.values()), tuple(claims.values())
+
+
+def freeze_benchmark(
+    cases: object,
+    reviews: object,
+    output_dir: Path,
+    require_human_approval: bool = True,
+):
+    values = tuple(cases.values()) if isinstance(cases, dict) else tuple(cases)
+    chunks, claims = corpus_for_pairs(values)
+    return freeze_with_corpus(
+        cases, reviews, chunks, claims, output_dir, require_human_approval
+    )
+
+
+def review(
+    case_id: str = "case-b",
+    *,
+    target_case: BenchmarkCase | None = None,
+    target_environment: KnowledgeEnvironment | None = None,
+    **overrides: object,
+) -> ReviewRecord:
+    target_case = target_case or case(case_id)
+    target_environment = target_environment or environment(case_id)
+    chunks, claims = corpus_for_pairs([(target_case, target_environment)])
     values = {
         "case_id": case_id, "decision": ReviewDecision.APPROVE, "issues": [],
+        "review_target_hash": compute_review_target_hash(
+            target_case, target_environment, chunks, claims
+        ),
         "suggested_changes": [], "evidence_refs": [f"chunk-{case_id}"],
         "reviewer_confidence": 0.9, "labeler_reasoning_seen": False,
         "prior_rule_failure_count": 0, "prompt_version": "v1", "prompt_hash": "a" * 64,
@@ -55,6 +129,66 @@ def review(case_id: str = "case-b", **overrides: object) -> ReviewRecord:
     }
     values.update(overrides)
     return ReviewRecord(**values)
+
+
+def test_freeze_rejects_review_when_case_or_environment_changed(tmp_path: Path) -> None:
+    original_case = case()
+    original_environment = environment()
+    bound_review = review(target_case=original_case, target_environment=original_environment)
+    changed_cases = (
+        original_case.model_copy(update={"question": "新问题"}),
+        original_case.model_copy(update={"answer_key": ("新答案",)}),
+        original_case.model_copy(update={"category": CaseCategory.REPEATED_KNOWLEDGE}),
+        original_case.model_copy(update={"draft_status": DraftStatus.GENERATED}),
+    )
+
+    for changed in changed_cases:
+        with pytest.raises(ValueError, match="review_target_hash"):
+            freeze_benchmark(
+                [(changed, original_environment)], [bound_review], tmp_path,
+                require_human_approval=False,
+            )
+    changed_environment = environment().model_copy(update={
+        "visible_chunk_ids": ("changed",),
+        "environment_hash": compute_environment_hash(
+            original_environment.environment_id, ("changed",), (), ()
+        ),
+    })
+    with pytest.raises(ValueError, match="review_target_hash"):
+        freeze_benchmark(
+            [(original_case, changed_environment)], [bound_review], tmp_path,
+            require_human_approval=False,
+        )
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_freeze_rejects_old_review_after_reviewer_visible_chunk_changes(
+    tmp_path: Path,
+) -> None:
+    target_case = case()
+    target_environment = environment()
+    chunks, claims = corpus_for_pairs([(target_case, target_environment)])
+    bound_review = review(
+        target_case=target_case,
+        target_environment=target_environment,
+    )
+    original = chunks[0]
+    changed_text = f"{original.text} 已变更"
+    changed_chunk = original.model_copy(update={
+        "text": changed_text,
+        "content_hash": content_hash(changed_text),
+    })
+
+    with pytest.raises(ValueError, match="review_target_hash"):
+        freeze_with_corpus(
+            [(target_case, target_environment)],
+            [bound_review],
+            (changed_chunk,),
+            claims,
+            tmp_path,
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -68,8 +202,26 @@ def read_jsonl(path: Path) -> list[dict]:
 def test_freeze_separates_runtime_labels_and_audit_and_is_stable(tmp_path: Path) -> None:
     pairs = [(case("case-b", human_review_status="approved"), environment("case-b")),
              (case("case-a", human_review_status="approved"), environment("case-a"))]
-    reviews = [review("case-b", prior_rule_failure_count=1),
-               review("case-a", prior_rule_failure_count=1)]
+    reviews = [
+        review(
+            "case-b",
+            target_case=pairs[0][0].model_copy(update={
+                "review_status": ReviewStatus.PENDING,
+                "human_review_status": HumanReviewStatus.NOT_REQUIRED,
+            }),
+            target_environment=pairs[0][1],
+            prior_rule_failure_count=1,
+        ),
+        review(
+            "case-a",
+            target_case=pairs[1][0].model_copy(update={
+                "review_status": ReviewStatus.PENDING,
+                "human_review_status": HumanReviewStatus.NOT_REQUIRED,
+            }),
+            target_environment=pairs[1][1],
+            prior_rule_failure_count=1,
+        ),
+    ]
     first = freeze_benchmark(pairs, reviews, tmp_path)
 
     runtime = read_jsonl(first.runtime_path)
@@ -99,14 +251,24 @@ def test_freeze_separates_runtime_labels_and_audit_and_is_stable(tmp_path: Path)
 def test_formal_freeze_rejects_unapproved_human_status_without_writes(
     tmp_path: Path, status: str
 ) -> None:
+    target_case = case(human_review_status=status)
+    target_environment = environment()
     with pytest.raises(ValueError, match="human_review_status"):
-        freeze_benchmark([(case(human_review_status=status), environment())], [review()], tmp_path)
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [review(target_case=target_case, target_environment=target_environment)],
+            tmp_path,
+        )
     assert list(tmp_path.iterdir()) == []
 
 
 def test_candidate_freeze_preserves_pending_status(tmp_path: Path) -> None:
+    target_case = case(human_review_status="pending")
+    target_environment = environment()
     result = freeze_benchmark(
-        [(case(human_review_status="pending"), environment())], [review()], tmp_path,
+        [(target_case, target_environment)],
+        [review(target_case=target_case, target_environment=target_environment)],
+        tmp_path,
         require_human_approval=False,
     )
     assert read_jsonl(result.audit_path)[0]["case"]["human_review_status"] == "pending"
@@ -318,10 +480,16 @@ def test_existing_different_file_is_not_overwritten(tmp_path: Path) -> None:
 
 
 def test_non_validated_or_pending_review_case_is_rejected(tmp_path: Path) -> None:
+    generated = case(draft_status="generated")
     with pytest.raises(ValueError, match="draft_status"):
-        freeze_benchmark([(case(draft_status="generated"), environment())], [review()], tmp_path)
+        freeze_benchmark(
+            [(generated, environment())], [review(target_case=generated)], tmp_path
+        )
+    pending = case(review_status="pending")
     with pytest.raises(ValueError, match="review_status"):
-        freeze_benchmark([(case(review_status="pending"), environment())], [review()], tmp_path)
+        freeze_benchmark(
+            [(pending, environment())], [review(target_case=pending)], tmp_path
+        )
 
 
 @pytest.mark.parametrize(
@@ -340,9 +508,17 @@ def test_non_validated_or_pending_review_case_is_rejected(tmp_path: Path) -> Non
 def test_formal_freeze_recomputes_review_gate_and_only_accepts_approved_decision(
     tmp_path: Path, case_overrides: dict, review_overrides: dict
 ) -> None:
+    target_case = case(**case_overrides)
+    target_environment = environment()
     with pytest.raises(ValueError, match="human_review_status|approve|APPROVE"):
         freeze_benchmark(
-            [(case(**case_overrides), environment())], [review(**review_overrides)], tmp_path
+            [(target_case, target_environment)],
+            [review(
+                target_case=target_case,
+                target_environment=target_environment,
+                **review_overrides,
+            )],
+            tmp_path,
         )
 
 
@@ -358,9 +534,17 @@ def test_formal_freeze_recomputes_review_gate_and_only_accepts_approved_decision
 def test_candidate_freeze_allows_unfinished_or_nonapproval_reviews(
     tmp_path: Path, review_status: str, review_overrides: dict
 ) -> None:
+    target_case = case(review_status=review_status, human_review_status="pending")
+    target_environment = environment()
     result = freeze_benchmark(
-        [(case(review_status=review_status, human_review_status="pending"), environment())],
-        [review(**review_overrides)], tmp_path, require_human_approval=False,
+        [(target_case, target_environment)],
+        [review(
+            target_case=target_case,
+            target_environment=target_environment,
+            **review_overrides,
+        )],
+        tmp_path,
+        require_human_approval=False,
     )
     assert read_jsonl(result.audit_path)[0]["case"]["review_status"] == review_status
 
@@ -368,13 +552,15 @@ def test_candidate_freeze_allows_unfinished_or_nonapproval_reviews(
 def test_candidate_freeze_rejects_human_rejection_and_applied_status_mismatch(
     tmp_path: Path,
 ) -> None:
+    rejected = case(human_review_status="rejected")
     with pytest.raises(ValueError, match="human_review_status"):
         freeze_benchmark(
-            [(case(human_review_status="rejected"), environment())], [review()], tmp_path,
+            [(rejected, environment())], [review(target_case=rejected)], tmp_path,
             require_human_approval=False,
         )
+    mismatched = case(review_status="revise", human_review_status="pending")
     with pytest.raises(ValueError, match="disagrees"):
         freeze_benchmark(
-            [(case(review_status="revise", human_review_status="pending"), environment())],
-            [review()], tmp_path, require_human_approval=False,
+            [(mismatched, environment())], [review(target_case=mismatched)], tmp_path,
+            require_human_approval=False,
         )

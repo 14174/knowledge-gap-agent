@@ -11,6 +11,7 @@ from knowledge_gap_agent.benchmark.models import KnowledgeEnvironment
 from knowledge_gap_agent.benchmark.review import (
     ReviewDecision,
     ReviewRecord,
+    compute_review_target_hash,
     requires_human_review,
 )
 from knowledge_gap_agent.benchmark.validation import build_runtime_payload
@@ -20,6 +21,7 @@ from knowledge_gap_agent.contracts.benchmark import (
     HumanReviewStatus,
     ReviewStatus,
 )
+from knowledge_gap_agent.corpus.models import Claim, CorpusChunk
 from knowledge_gap_agent.utils.canonical import canonical_json, sha256_hex
 
 
@@ -194,11 +196,15 @@ def _write_with_lock(directory: Path, contents: Mapping[Path, bytes]) -> None:
 def freeze_benchmark(
     cases: object,
     reviews: object,
+    chunks: Iterable[CorpusChunk],
+    claims: Iterable[Claim],
     output_dir: str | Path,
     require_human_approval: bool = True,
 ) -> FreezeResult:
     pairs = _revalidate_pairs(cases)
     reviews_by_id = _index_reviews(reviews)
+    corpus_chunks = tuple(chunks)
+    corpus_claims = tuple(claims)
     cases_by_id: dict[str, tuple[BenchmarkCase, KnowledgeEnvironment]] = {}
     for pair in pairs:
         case = pair[0]
@@ -220,11 +226,20 @@ def freeze_benchmark(
         ReviewDecision.REJECT: ReviewStatus.REJECTED,
     }
     for case_id in sorted(case_ids):
-        case = cases_by_id[case_id][0]
+        case, environment = cases_by_id[case_id]
         review = reviews_by_id[case_id]
+        if review.review_target_hash != compute_review_target_hash(
+            case, environment, corpus_chunks, corpus_claims
+        ):
+            raise ValueError(
+                f"case_id={case_id}: review_target_hash does not match current draft"
+            )
         if case.draft_status is not DraftStatus.VALIDATED:
             raise ValueError(f"case_id={case_id}: draft_status must be validated")
-        unknown_refs = sorted(set(review.evidence_refs) - set(case.evidence_chunk_ids))
+        environment_chunk_ids = set(environment.visible_chunk_ids)
+        environment_chunk_ids.update(environment.research_chunk_ids)
+        environment_chunk_ids.update(environment.excluded_chunk_ids)
+        unknown_refs = sorted(set(review.evidence_refs) - environment_chunk_ids)
         if unknown_refs:
             raise ValueError(
                 f"case_id={case_id}: evidence_refs contain unknown refs: {unknown_refs!r}"

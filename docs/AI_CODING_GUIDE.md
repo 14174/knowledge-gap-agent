@@ -235,11 +235,18 @@ review record
 约束如下：
 
 - Reviewer Agent 不读取 Labeler Agent 的长推理文本。
+- Reviewer 只读取显式白名单生成的结构化草稿、环境三池正文、主张与证据；输入不得包含 `annotation_reason`、`review_status` 或 `human_review_status`。
+- `ReviewRecord.review_target_hash` 必须精确绑定 Reviewer 实际可见输入。唯一计算链路是：由 case、environment、chunks、claims 构造无哈希白名单 `ReviewTargetInput`，对其规范 JSON 求哈希，再生成 `ReviewInput`；禁止另写一套仅哈希编号的投影。
+- `ReviewInput` 必须在模型级复算并校验自身哈希，使 Python 构造、字典解析和 JSON 解析具有同一拒绝行为。`model_copy` 不验证，公共入口必须通过 `model_dump(mode="python")` 后重新校验。
+- case 投影排除 `annotation_reason`、`review_status`、`human_review_status`；环境三池展开后的块正文、来源、标题路径、`claim_ids`，以及相关主张的陈述、时效、冲突边和证据映射全部进入哈希。三个排除字段变化不改变哈希，其余 Reviewer 可见内容变化必须重新复核。
+- case、environment、chunk、claim 的字段纳入与排除集合必须显式声明并在生产入口核对；数据模型新增字段时，未先决定 Reviewer 可见性的构建必须早拒绝。
+- `evidence_refs` 允许引用对应环境可见、研究、排除三池的并集，不得引用环境外块。复核门禁和冻结均用可信 chunks/claims 重建目标与允许集合。
 - `draft_status` 未达到 `validated` 时，不得进入模型复核。
 - 复核状态只允许从 `pending` 转换一次；修订产生新记录，不覆盖旧结论。
 - 过时、冲突、低置信度、`revise`、`reject` 和历史规则失败样本必须进入人工审核。
 - 人工 `rejected` 的样本不能进入候选或正式冻结集。
 - 正式冻结重新计算门禁，不信任调用方手填的状态字段。
+- 应用复核门禁和冻结前都用当前可信语料重新验证目标哈希；错误哈希不得冻结。
 
 搜索是否必要只是一个标签，不是 Harness 有效性的最终证据。实验还要报告任务结果、缺口识别、成本和轨迹指标。
 

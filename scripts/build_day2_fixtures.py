@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 
 from knowledge_gap_agent.benchmark.models import (
     KnowledgeEnvironment,
     compute_environment_hash,
 )
+from knowledge_gap_agent.benchmark.review import ReviewRecord, build_review_input
 from knowledge_gap_agent.benchmark.validation import validate_dataset
 from knowledge_gap_agent.contracts.benchmark import BenchmarkCase, CaseCategory
 from knowledge_gap_agent.corpus.chunking import chunk_markdown
@@ -682,6 +684,44 @@ def build() -> None:
         )
         raise ValueError(f"夹具规则校验失败：\n{rendered}")
 
+    environments_by_id = {
+        environment.environment_id: environment for environment in environments
+    }
+    review_inputs = tuple(
+        build_review_input(
+            case,
+            environments_by_id[case.environment_id],
+            chunks,
+            claims,
+        )
+        for case in cases
+    )
+    review_inputs_by_case = {
+        item.case.case_id: item for item in review_inputs
+    }
+    reviews_path = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
+    if reviews_path.is_file() and reviews_path.stat().st_size:
+        seen_review_ids: set[str] = set()
+        for line_number, line in enumerate(
+            reviews_path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            try:
+                review = ReviewRecord.model_validate(json.loads(line))
+            except (json.JSONDecodeError, ValueError) as error:
+                raise ValueError(
+                    f"reviews.jsonl 第 {line_number} 行无法解析"
+                ) from error
+            if review.case_id in seen_review_ids:
+                raise ValueError(f"reviews.jsonl 含重复 case_id：{review.case_id}")
+            seen_review_ids.add(review.case_id)
+            target = review_inputs_by_case.get(review.case_id)
+            if target is None:
+                raise ValueError(f"review case_id 不存在于当前草稿：{review.case_id}")
+            if review.review_target_hash != target.review_target_hash:
+                raise ValueError(
+                    f"case_id={review.case_id}: review_target_hash 与当前草稿不匹配"
+                )
+
     _write_json(
         ROOT / "fixtures" / "sources" / "manifest.json",
         manifest.model_dump(mode="json"),
@@ -699,6 +739,10 @@ def build() -> None:
         tuple(claim.model_dump(mode="json") for claim in claims),
     )
     _write_jsonl(ROOT / "fixtures" / "benchmark" / "drafts.jsonl", drafts)
+    _write_jsonl(
+        ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl",
+        tuple(item.model_dump(mode="json") for item in review_inputs),
+    )
     for name in ("reviews.jsonl", "change_log.jsonl"):
         path = ROOT / "fixtures" / "benchmark" / name
         path.parent.mkdir(parents=True, exist_ok=True)

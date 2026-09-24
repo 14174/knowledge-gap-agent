@@ -3,11 +3,20 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from knowledge_gap_agent.benchmark.models import KnowledgeEnvironment
+from knowledge_gap_agent.benchmark.review import (
+    ReviewDecision,
+    ReviewInput,
+    ReviewRecord,
+    apply_review_gate,
+    compute_review_target_hash,
+)
+from knowledge_gap_agent.benchmark.freeze import freeze_benchmark
 from knowledge_gap_agent.benchmark.validation import (
     LABEL_FIELDS,
     build_model_input_payload,
@@ -34,6 +43,7 @@ DOCUMENTS_PATH = ROOT / "fixtures" / "corpus" / "documents.jsonl"
 CHUNKS_PATH = ROOT / "fixtures" / "corpus" / "chunks.jsonl"
 CLAIMS_PATH = ROOT / "fixtures" / "corpus" / "claims.jsonl"
 DRAFTS_PATH = ROOT / "fixtures" / "benchmark" / "drafts.jsonl"
+REVIEW_INPUTS_PATH = ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl"
 REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
 CHANGE_LOG_PATH = ROOT / "fixtures" / "benchmark" / "change_log.jsonl"
 CONTROLLED_SOURCE_PATH = (
@@ -85,6 +95,7 @@ EXPECTED_FILES = (
     CHUNKS_PATH,
     CLAIMS_PATH,
     DRAFTS_PATH,
+    REVIEW_INPUTS_PATH,
     REVIEWS_PATH,
     CHANGE_LOG_PATH,
 )
@@ -314,7 +325,7 @@ def test_case_and_environment_ids_are_opaque(fixture_data) -> None:
 def test_simple_structural_features_have_identical_category_distributions(
     fixture_data,
 ) -> None:
-    _, chunks, _, _, cases, environments = fixture_data
+    _, chunks, claims, _, cases, environments = fixture_data
     chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     environments_by_id = {
         environment.environment_id: environment for environment in environments
@@ -529,7 +540,7 @@ def test_runtime_payloads_contain_no_label_fields(fixture_data) -> None:
 
 
 def test_model_inputs_hide_envelope_identifiers_and_nonvisible_knowledge(fixture_data) -> None:
-    _, chunks, _, _, cases, environments = fixture_data
+    _, chunks, claims, _, cases, environments = fixture_data
     chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     environments_by_id = {
         environment.environment_id: environment for environment in environments
@@ -603,10 +614,177 @@ def test_model_inputs_hide_envelope_identifiers_and_nonvisible_knowledge(fixture
         assert all(hint not in rendered for hint in category_hints)
 
 
+def test_review_inputs_are_complete_auditable_and_reasoning_free(fixture_data) -> None:
+    _, chunks, claims, _, cases, environments = fixture_data
+    lines = REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+    review_inputs = tuple(ReviewInput.model_validate_json(line) for line in lines)
+    cases_by_id = {case.case_id: case for case in cases}
+    environments_by_id = {
+        environment.environment_id: environment for environment in environments
+    }
+    chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+
+    assert len(review_inputs) == 48
+    assert {item.case.case_id for item in review_inputs} == set(cases_by_id)
+    for item in review_inputs:
+        case = cases_by_id[item.case.case_id]
+        environment = environments_by_id[case.environment_id]
+        assert item.review_target_hash == compute_review_target_hash(
+            case, environment, chunks, claims
+        )
+        assert len(item.environment.visible_chunks) == 4
+        assert len(item.environment.research_chunks) == 1
+        assert len(item.environment.excluded_chunks) == 1
+        all_chunks = (
+            item.environment.visible_chunks
+            + item.environment.research_chunks
+            + item.environment.excluded_chunks
+        )
+        assert all(chunk.text == chunks_by_id[chunk.chunk_id].text for chunk in all_chunks)
+        assert item.claims
+        rendered = canonical_json(item.model_dump(mode="json"))
+        assert "annotation_reason" not in rendered
+        assert case.annotation_reason not in rendered
+        assert "decision" not in type(item).model_fields
+        assert "reviewer_confidence" not in type(item).model_fields
+        assert "review_status" not in type(item.case).model_fields
+        assert "human_review_status" not in type(item.case).model_fields
+
+
+def test_pending_fixture_review_can_apply_gate_then_freeze_without_rebinding(
+    fixture_data, tmp_path: Path,
+) -> None:
+    _, chunks, claims, _, cases, environments = fixture_data
+    case = next(item for item in cases if item.category is CaseCategory.LOCAL_SUFFICIENT)
+    environment = next(
+        item for item in environments if item.environment_id == case.environment_id
+    )
+    review = ReviewRecord(
+        case_id=case.case_id,
+        review_target_hash=compute_review_target_hash(case, environment, chunks, claims),
+        decision=ReviewDecision.APPROVE,
+        issues=(),
+        suggested_changes=(),
+        evidence_refs=(case.evidence_chunk_ids[0],),
+        reviewer_confidence=0.9,
+        labeler_reasoning_seen=False,
+        prior_rule_failure_count=0,
+        prompt_version="review-v1",
+        prompt_hash="a" * 64,
+        model_provider="provider",
+        model_name="reviewer",
+        model_revision="r1",
+        reviewed_at=datetime(2026, 9, 24, tzinfo=timezone.utc),
+    )
+
+    reviewed_case = apply_review_gate(case, environment, chunks, claims, review)
+
+    assert reviewed_case.review_status is ReviewStatus.APPROVED
+    assert reviewed_case.human_review_status is HumanReviewStatus.NOT_REQUIRED
+    assert compute_review_target_hash(
+        reviewed_case, environment, chunks, claims
+    ) == review.review_target_hash
+    result = freeze_benchmark(
+        [(reviewed_case, environment)], [review], chunks, claims, tmp_path
+    )
+    assert result.case_count == 1
+    assert result.runtime_path.is_file()
+
+
+@pytest.mark.parametrize("category", [CaseCategory.OUTDATED, CaseCategory.CONFLICT])
+def test_high_risk_review_may_cite_controlled_environment_chunk(
+    fixture_data, tmp_path: Path, category: CaseCategory,
+) -> None:
+    _, chunks, claims, _, cases, environments = fixture_data
+    chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    case = next(item for item in cases if item.category is category)
+    environment = next(
+        item for item in environments if item.environment_id == case.environment_id
+    )
+    environment_chunk_ids = (
+        environment.visible_chunk_ids
+        + environment.research_chunk_ids
+        + environment.excluded_chunk_ids
+    )
+    controlled_chunk_id = next(
+        chunk_id
+        for chunk_id in environment_chunk_ids
+        if chunks_by_id[chunk_id].source_id == "controlled-benchmark-distractors"
+    )
+    review = ReviewRecord(
+        case_id=case.case_id,
+        review_target_hash=compute_review_target_hash(case, environment, chunks, claims),
+        decision=ReviewDecision.APPROVE,
+        issues=(),
+        suggested_changes=(),
+        evidence_refs=(controlled_chunk_id,),
+        reviewer_confidence=0.9,
+        labeler_reasoning_seen=False,
+        prior_rule_failure_count=0,
+        prompt_version="review-v1",
+        prompt_hash="a" * 64,
+        model_provider="provider",
+        model_name="reviewer",
+        model_revision="r1",
+        reviewed_at=datetime(2026, 9, 24, tzinfo=timezone.utc),
+    )
+
+    reviewed_case = apply_review_gate(case, environment, chunks, claims, review)
+    approved_case = reviewed_case.model_copy(update={
+        "human_review_status": HumanReviewStatus.APPROVED,
+    })
+    result = freeze_benchmark(
+        [(approved_case, environment)], [review], chunks, claims, tmp_path
+    )
+
+    assert result.case_count == 1
+
+
+def test_rebuild_rejects_stale_nonempty_reviews_without_overwriting(fixture_data) -> None:
+    *_, cases, environments = fixture_data
+    del environments
+    case = cases[0]
+    original = REVIEWS_PATH.read_bytes()
+    stale = ReviewRecord(
+        case_id=case.case_id,
+        review_target_hash="0" * 64,
+        decision="approve",
+        issues=(),
+        suggested_changes=(),
+        evidence_refs=(case.evidence_chunk_ids[0],),
+        reviewer_confidence=0.9,
+        labeler_reasoning_seen=False,
+        prior_rule_failure_count=0,
+        prompt_version="review-v1",
+        prompt_hash="a" * 64,
+        model_provider="provider",
+        model_name="reviewer",
+        model_revision="r1",
+        reviewed_at="2026-09-24T00:00:00+08:00",
+    )
+    stale_bytes = (canonical_json(stale.model_dump(mode="json")) + "\n").encode("utf-8")
+    try:
+        REVIEWS_PATH.write_bytes(stale_bytes)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "review_target_hash" in result.stderr
+        assert REVIEWS_PATH.read_bytes() == stale_bytes
+    finally:
+        REVIEWS_PATH.write_bytes(original)
+
+
 def test_jsonl_is_canonical_and_reviewer_outputs_remain_empty(fixture_data) -> None:
     _, _, _, drafts, _, _ = fixture_data
     assert all(set(draft) == {"case", "environment"} for draft in drafts)
-    for path in (DOCUMENTS_PATH, CHUNKS_PATH, CLAIMS_PATH, DRAFTS_PATH):
+    for path in (
+        DOCUMENTS_PATH, CHUNKS_PATH, CLAIMS_PATH, DRAFTS_PATH, REVIEW_INPUTS_PATH,
+    ):
         lines = path.read_text(encoding="utf-8").splitlines()
         assert lines
         assert all(line == canonical_json(json.loads(line)) for line in lines)
@@ -622,6 +800,7 @@ def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> Non
         CHUNKS_PATH,
         CLAIMS_PATH,
         DRAFTS_PATH,
+        REVIEW_INPUTS_PATH,
         REVIEWS_PATH,
         CHANGE_LOG_PATH,
     )

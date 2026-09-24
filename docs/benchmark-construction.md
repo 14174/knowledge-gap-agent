@@ -2,7 +2,7 @@
 
 ## 1. 范围与状态
 
-本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张和 48 条候选样本。`reviews.jsonl` 与 `change_log.jsonl` 当前为空；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有写入模型复核或人工批准结论。
+本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。`reviews.jsonl` 与 `change_log.jsonl` 当前为空；尚未生成正式 `runtime`、`labels` 或 `audit` 文件，也没有写入模型复核或人工批准结论。
 
 构建时间统一固定为 `2026-09-24T00:00:00+08:00`。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
 
@@ -91,6 +91,8 @@
 - 所有 case 当前为 `draft_status=validated`、`review_status=pending`、`human_review_status=not_required`。最后一个状态只表示复核前尚未执行人工升级规则，不代表人工通过。
 - `build_runtime_payload` 只构造供评测器关联数据的冻结信封，允许保留不透明关联编号；该信封不得原样传给决策模型。
 - `build_model_input_payload` 采用独立白名单，只输出问题与按环境顺序解析的可见知识正文；入口重新验证 case、environment 和 chunk，校验 case/environment 配对，并在模型调用前拒绝未知或重复块引用。
+- `review_inputs.jsonl` 由 Pydantic 白名单确定性生成，包含待审 case、环境三池正文和相关主张证据，不包含 `annotation_reason`、`review_status`、`human_review_status`、Labeler 长推理或任何复核结论。
+- 每条 Reviewer 输入的 `review_target_hash` 直接取自同一条无哈希 Reviewer 白名单输入的规范 JSON。它绑定结构化 case、三池展开后的块正文/来源/标题/主张关联，以及相关主张的陈述、时效、冲突与证据映射；明确排除 `annotation_reason`、`review_status`、`human_review_status`。非空 `reviews.jsonl` 在任何写盘前以当前可信语料重建并逐条核对，陈旧结果会早拒绝且保留原文件。
 
 ## 6. 规则校验
 
@@ -109,12 +111,16 @@
 - `build_runtime_payload` 不包含 `LABEL_FIELDS`，但其编号只用于评测器关联；即使攻击者公开枚举四个内部槽位并从信封编号恢复槽位，模型输入也不接收这些编号；
 - 模型输入恰含问题和 4 条可见知识正文，不含研究池、排除池、样本/基础问题/环境/块编号、环境类别名或 `need_research` 提示；
 - 模型输入公共入口会拒绝错误的 case/environment 配对、保留旧哈希的篡改 chunk 和空问题 case；
+- 48 条 Reviewer 输入与草稿一一对应，三池正文可用、规范 JSON 稳定且无 `annotation_reason`；
+- 每条磁盘 Reviewer 输入通过 `ReviewInput.model_validate_json` 自校验；问题、块正文、主张陈述或哈希任一被改写都会拒绝；
+- ReviewRecord、复核门禁和冻结路径均从可信 chunks/claims 重建 Reviewer 实际可见输入；问题、答案键、类别、`draft_status`、环境池、块正文或相关主张变化会使旧复核失效，三个明确排除字段不改变哈希；
+- Reviewer 输入字段集合与 case/environment/chunk/claim 模型字段集合逐项核对，未显式分类的新字段会早拒绝；`evidence_refs` 只允许落在对应环境三池并集，受控过时/冲突块可以被引用，环境外块拒绝；
 - 清单校验无错误，所有 JSONL 使用规范 JSON；
 - 无外部来源重跑后，所有生成文件字节不变。
 
 ## 7. Reviewer 隔离与人工门禁
 
-独立 Reviewer 只接收基础问题、环境、证据和结构化草稿，不接收 Labeler 的隐藏推理文本。当前 `reviews.jsonl` 保持零字节，留给独立 Reviewer Agent 全量复核；脚本也不会伪造 `approve`、`revise`、`reject` 或置信度。
+独立 Reviewer 只接收 `review_inputs.jsonl` 中的基础问题、环境三池正文、主张、证据和结构化草稿，不接收 `annotation_reason`、`review_status`、`human_review_status` 或 Labeler 的隐藏推理文本。后两个状态是复核及人工门禁输出。Reviewer 返回的 `review_target_hash` 必须来自对应输入。当前 `reviews.jsonl` 保持零字节，留给独立 Reviewer Agent 全量复核；脚本也不会伪造 `approve`、`revise`、`reject` 或置信度。这一步只防止陈旧复核，不代表模型复核或人工批准已经完成。
 
 Reviewer 完成后，所有 `outdated` 和 `conflict` 样本、置信度低于 `0.8` 的样本、`revise`、`reject` 或曾经规则失败的样本都必须进入人工审核。自动阶段只能把人工状态改为 `pending` 或 `not_required`，不得写入人工 `approved`。人工修改必须追加到 `change_log.jsonl`，不得覆盖旧记录。
 
@@ -131,7 +137,7 @@ uv run python scripts/build_day2_fixtures.py --seed-source-root <固定只读克
 ```powershell
 uv run python scripts/build_day2_fixtures.py
 uv run python -m pytest tests/benchmark/test_fixture_dataset.py -v
-Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl
+Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl
 ```
 
 本次构建的文件哈希为：
@@ -143,3 +149,4 @@ Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/do
 | `fixtures/corpus/chunks.jsonl` | `91eb2c7272286eff9eaa641a51e07ad6ff597f639d4f170d903644852429bcd7` |
 | `fixtures/corpus/claims.jsonl` | `d59426b529d632ca4036a04172f1b72077e471b31613f4761bfd7031732c4666` |
 | `fixtures/benchmark/drafts.jsonl` | `b5f951c2950dcc37670d262480800895cc033c53a0406b5deaa2a6e351335d6e` |
+| `fixtures/benchmark/review_inputs.jsonl` | `b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8` |
