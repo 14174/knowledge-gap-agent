@@ -7,7 +7,11 @@ import os
 from pathlib import Path
 import tempfile
 
-from knowledge_gap_agent.benchmark.models import KnowledgeEnvironment
+from knowledge_gap_agent.benchmark.models import (
+    HumanReviewDecision,
+    HumanReviewRecord,
+    KnowledgeEnvironment,
+)
 from knowledge_gap_agent.benchmark.review import (
     ReviewDecision,
     ReviewRecord,
@@ -83,6 +87,18 @@ def _index_reviews(reviews: object) -> dict[str, ReviewRecord]:
         review = ReviewRecord.model_validate(raw_review.model_dump(mode="python"))
         if review.case_id in result:
             raise ValueError(f"duplicate review case_id: {review.case_id}")
+        result[review.case_id] = review
+    return result
+
+
+def _index_human_reviews(human_reviews: object) -> dict[str, HumanReviewRecord]:
+    result: dict[str, HumanReviewRecord] = {}
+    for raw_review in _values(human_reviews):
+        review = HumanReviewRecord.model_validate(
+            raw_review.model_dump(mode="python")
+        )
+        if review.case_id in result:
+            raise ValueError(f"duplicate human review case_id: {review.case_id}")
         result[review.case_id] = review
     return result
 
@@ -200,9 +216,14 @@ def freeze_benchmark(
     claims: Iterable[Claim],
     output_dir: str | Path,
     require_human_approval: bool = True,
+    *,
+    human_reviews: object = (),
 ) -> FreezeResult:
     pairs = _revalidate_pairs(cases)
     reviews_by_id = _index_reviews(reviews)
+    human_reviews_by_id = _index_human_reviews(human_reviews)
+    if not require_human_approval and human_reviews_by_id:
+        raise ValueError("candidate freeze does not accept human review records")
     corpus_chunks = tuple(chunks)
     corpus_claims = tuple(claims)
     cases_by_id: dict[str, tuple[BenchmarkCase, KnowledgeEnvironment]] = {}
@@ -225,12 +246,16 @@ def freeze_benchmark(
         ReviewDecision.REVISE: ReviewStatus.REVISE,
         ReviewDecision.REJECT: ReviewStatus.REJECTED,
     }
+    required_human_case_ids: set[str] = set()
+    target_hashes: dict[str, str] = {}
     for case_id in sorted(case_ids):
         case, environment = cases_by_id[case_id]
         review = reviews_by_id[case_id]
-        if review.review_target_hash != compute_review_target_hash(
+        target_hash = compute_review_target_hash(
             case, environment, corpus_chunks, corpus_claims
-        ):
+        )
+        target_hashes[case_id] = target_hash
+        if review.review_target_hash != target_hash:
             raise ValueError(
                 f"case_id={case_id}: review_target_hash does not match current draft"
             )
@@ -250,9 +275,13 @@ def freeze_benchmark(
         ):
             raise ValueError(f"case_id={case_id}: review_status disagrees with review decision")
         if not require_human_approval:
-            if case.human_review_status is HumanReviewStatus.REJECTED:
+            if case.human_review_status in {
+                HumanReviewStatus.APPROVED,
+                HumanReviewStatus.REJECTED,
+            }:
                 raise ValueError(
-                    f"case_id={case_id}: human_review_status=rejected is not eligible "
+                    f"case_id={case_id}: human_review_status="
+                    f"{case.human_review_status.value} is final and is not eligible "
                     "for candidate freeze"
                 )
             continue
@@ -261,27 +290,69 @@ def freeze_benchmark(
             raise ValueError(
                 f"case_id={case_id}: formal freeze requires review decision approve"
             )
-        if case.review_status is not ReviewStatus.APPROVED:
+        if requires_human_review(case, review):
+            required_human_case_ids.add(case_id)
+
+    if require_human_approval:
+        human_case_ids = set(human_reviews_by_id)
+        missing = sorted(required_human_case_ids - human_case_ids)
+        extra = sorted(human_case_ids - required_human_case_ids)
+        if missing or extra:
             raise ValueError(
-                f"case_id={case_id}: formal freeze requires review_status=approved"
+                f"human review case set mismatch: missing human reviews={missing!r}; "
+                f"extra human reviews={extra!r}"
             )
-        human_review_required = requires_human_review(case, review)
-        allowed_human_statuses = (
-            {HumanReviewStatus.APPROVED}
-            if human_review_required
-            else {HumanReviewStatus.NOT_REQUIRED, HumanReviewStatus.APPROVED}
-        )
-        if case.human_review_status not in allowed_human_statuses:
-            raise ValueError(
-                f"case_id={case_id}: human_review_status={case.human_review_status.value} "
-                "is not eligible for formal freeze"
+
+        for case_id in sorted(required_human_case_ids):
+            record = human_reviews_by_id[case_id]
+            if record.review_target_hash != target_hashes[case_id]:
+                raise ValueError(
+                    f"case_id={case_id}: human review_target_hash does not match "
+                    "current draft"
+                )
+            if record.decision is not HumanReviewDecision.APPROVED:
+                raise ValueError(
+                    f"case_id={case_id}: human review decision="
+                    f"{record.decision.value} is not eligible for formal freeze"
+                )
+
+    frozen_cases_by_id: dict[str, BenchmarkCase] = {}
+    for case_id in sorted(case_ids):
+        case, _ = cases_by_id[case_id]
+        review = reviews_by_id[case_id]
+        review_status = expected_status[review.decision]
+        if require_human_approval:
+            human_status = (
+                HumanReviewStatus.APPROVED
+                if case_id in required_human_case_ids
+                else HumanReviewStatus.NOT_REQUIRED
             )
+            if (
+                case.human_review_status
+                in {HumanReviewStatus.APPROVED, HumanReviewStatus.REJECTED}
+                and case.human_review_status is not human_status
+            ):
+                raise ValueError(
+                    f"case_id={case_id}: human_review_status disagrees with "
+                    "trusted human review record"
+                )
+        else:
+            human_status = (
+                HumanReviewStatus.PENDING
+                if requires_human_review(case, review)
+                else HumanReviewStatus.NOT_REQUIRED
+            )
+        frozen_cases_by_id[case_id] = case.model_copy(update={
+            "review_status": review_status,
+            "human_review_status": human_status,
+        })
 
     runtime_rows = []
     label_rows = []
     audit_rows = []
     for case_id in sorted(case_ids):
-        case, environment = cases_by_id[case_id]
+        _, environment = cases_by_id[case_id]
+        case = frozen_cases_by_id[case_id]
         review = reviews_by_id[case_id]
         runtime_rows.append(build_runtime_payload(case, environment))
         label_rows.append({
@@ -296,6 +367,11 @@ def freeze_benchmark(
         audit_rows.append({
             "case": case.model_dump(mode="json"),
             "review": review.model_dump(mode="json"),
+            "human_review": (
+                human_reviews_by_id[case_id].model_dump(mode="json")
+                if case_id in required_human_case_ids
+                else None
+            ),
         })
 
     runtime_content = _jsonl(runtime_rows)

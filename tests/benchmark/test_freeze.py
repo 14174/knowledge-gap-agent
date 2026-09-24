@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from knowledge_gap_agent.benchmark import (
+    HumanReviewDecision,
+    HumanReviewRecord,
     LABEL_FIELDS,
     KnowledgeEnvironment,
     ReviewDecision,
@@ -98,11 +100,19 @@ def freeze_benchmark(
     reviews: object,
     output_dir: Path,
     require_human_approval: bool = True,
+    *,
+    human_reviews: object = (),
 ):
     values = tuple(cases.values()) if isinstance(cases, dict) else tuple(cases)
     chunks, claims = corpus_for_pairs(values)
     return freeze_with_corpus(
-        cases, reviews, chunks, claims, output_dir, require_human_approval
+        cases,
+        reviews,
+        chunks,
+        claims,
+        output_dir,
+        require_human_approval,
+        human_reviews=human_reviews,
     )
 
 
@@ -129,6 +139,49 @@ def review(
     }
     values.update(overrides)
     return ReviewRecord(**values)
+
+
+def human_review(
+    target_case: BenchmarkCase,
+    target_review: ReviewRecord,
+    **overrides: object,
+) -> HumanReviewRecord:
+    values = {
+        "case_id": target_case.case_id,
+        "review_target_hash": target_review.review_target_hash,
+        "decision": HumanReviewDecision.APPROVED,
+        "actor": "human-reviewer",
+        "reason": "标签、问题、答案键和三池关系一致。",
+        "reviewed_at": datetime(2026, 9, 25, tzinfo=timezone.utc),
+        "requested_changes": (),
+    }
+    values.update(overrides)
+    return HumanReviewRecord(**values)
+
+
+def high_risk_bundle(
+    case_id: str = "case-b",
+    *,
+    human_review_status: str = "pending",
+) -> tuple[BenchmarkCase, KnowledgeEnvironment, ReviewRecord, HumanReviewRecord]:
+    target_case = case(
+        case_id,
+        category="conflict",
+        need_research=True,
+        human_review_status=human_review_status,
+    )
+    target_environment = environment(case_id)
+    model_review = review(
+        case_id,
+        target_case=target_case,
+        target_environment=target_environment,
+    )
+    return (
+        target_case,
+        target_environment,
+        model_review,
+        human_review(target_case, model_review),
+    )
 
 
 def test_freeze_rejects_review_when_case_or_environment_changed(tmp_path: Path) -> None:
@@ -222,7 +275,13 @@ def test_freeze_separates_runtime_labels_and_audit_and_is_stable(tmp_path: Path)
             prior_rule_failure_count=1,
         ),
     ]
-    first = freeze_benchmark(pairs, reviews, tmp_path)
+    human_reviews = [
+        human_review(pairs[0][0], reviews[0]),
+        human_review(pairs[1][0], reviews[1]),
+    ]
+    first = freeze_benchmark(
+        pairs, reviews, tmp_path, human_reviews=human_reviews
+    )
 
     runtime = read_jsonl(first.runtime_path)
     labels = read_jsonl(first.labels_path)
@@ -233,36 +292,200 @@ def test_freeze_separates_runtime_labels_and_audit_and_is_stable(tmp_path: Path)
         "case_id", "category", "need_research", "required_claim_ids",
         "missing_claim_ids", "evidence_chunk_ids", "answer_key",
     }
-    assert set(audit[0]) == {"case", "review"}
+    assert set(audit[0]) == {"case", "review", "human_review"}
     assert audit[0]["case"]["annotation_reason"] == "证据完整"
     assert audit[0]["review"]["prior_rule_failure_count"] == 1
+    assert audit[0]["human_review"] == human_reviews[1].model_dump(mode="json")
+    assert all("human_review" not in row for row in runtime)
+    assert all("human_review" not in row for row in labels)
     assert first.case_count == 2
     assert all(len(value) == 64 for value in (
         first.runtime_hash, first.labels_hash, first.audit_hash, first.dataset_hash
     ))
 
     second = freeze_benchmark(
-        {"z": pairs[1], "a": pairs[0]}, {"z": reviews[1], "a": reviews[0]}, tmp_path
+        {"z": pairs[1], "a": pairs[0]},
+        {"z": reviews[1], "a": reviews[0]},
+        tmp_path,
+        human_reviews={"z": human_reviews[1], "a": human_reviews[0]},
     )
     assert second == first
 
 
-@pytest.mark.parametrize("status", ["pending", "rejected"])
-def test_formal_freeze_rejects_unapproved_human_status_without_writes(
-    tmp_path: Path, status: str
-) -> None:
-    target_case = case(human_review_status=status)
+def test_forged_case_approval_cannot_replace_human_record(tmp_path: Path) -> None:
+    target_case = case(
+        category="outdated",
+        need_research=True,
+        human_review_status="approved",
+    )
     target_environment = environment()
-    with pytest.raises(ValueError, match="human_review_status"):
+    model_review = review(
+        target_case=target_case,
+        target_environment=target_environment,
+    )
+    with pytest.raises(ValueError, match="missing human review"):
         freeze_benchmark(
             [(target_case, target_environment)],
-            [review(target_case=target_case, target_environment=target_environment)],
+            [model_review],
             tmp_path,
+            human_reviews=[],
         )
-    assert list(tmp_path.iterdir()) == []
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
 
 
-def test_candidate_freeze_preserves_pending_status(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["duplicate", "extra"])
+def test_formal_freeze_requires_exact_human_review_case_set(
+    tmp_path: Path, kind: str
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+    records = [approval, approval]
+    if kind == "extra":
+        other_case, _, other_review, other_approval = high_risk_bundle("case-extra")
+        assert other_case.case_id == other_review.case_id
+        records = [approval, other_approval]
+
+    with pytest.raises(ValueError, match=f"{kind} human review"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            human_reviews=records,
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_formal_freeze_rejects_stale_human_review_target_without_writes(
+    tmp_path: Path,
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+    stale = approval.model_copy(update={"review_target_hash": "0" * 64})
+
+    with pytest.raises(ValueError, match="human review_target_hash"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            human_reviews=[stale],
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "requested_changes"),
+    [
+        (HumanReviewDecision.REVISE, ("补充当前证据",)),
+        (HumanReviewDecision.REJECTED, ()),
+    ],
+)
+def test_formal_freeze_rejects_nonapproval_human_decisions_without_writes(
+    tmp_path: Path,
+    decision: HumanReviewDecision,
+    requested_changes: tuple[str, ...],
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+    record = approval.model_copy(update={
+        "decision": decision,
+        "requested_changes": requested_changes,
+    })
+
+    with pytest.raises(ValueError, match="human review decision"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            human_reviews=[record],
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_formal_freeze_revalidates_bypassed_human_review_model(
+    tmp_path: Path,
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+    bypassed = HumanReviewRecord.model_construct(
+        **{**approval.model_dump(mode="python"), "actor": "   "}
+    )
+
+    with pytest.raises(ValidationError, match="actor"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            human_reviews=[bypassed],
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_formal_freeze_derives_status_and_embeds_full_human_review_only_in_audit(
+    tmp_path: Path,
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+
+    result = freeze_benchmark(
+        [(target_case, target_environment)],
+        [model_review],
+        tmp_path,
+        human_reviews=[approval],
+    )
+
+    runtime = read_jsonl(result.runtime_path)
+    labels = read_jsonl(result.labels_path)
+    audit = read_jsonl(result.audit_path)
+    assert audit == [{
+        "case": target_case.model_copy(update={
+            "review_status": ReviewStatus.APPROVED,
+            "human_review_status": HumanReviewStatus.APPROVED,
+        }).model_dump(mode="json"),
+        "review": model_review.model_dump(mode="json"),
+        "human_review": approval.model_dump(mode="json"),
+    }]
+    assert all("human_review" not in row for row in runtime)
+    assert all("human_review" not in row for row in labels)
+    for payload in (runtime, labels):
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        assert approval.actor not in encoded
+        assert approval.reason not in encoded
+        assert approval.reviewed_at.isoformat() not in encoded
+
+
+def test_formal_freeze_rejects_terminal_case_status_that_disagrees_with_record(
+    tmp_path: Path,
+) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle(
+        human_review_status="rejected"
+    )
+
+    with pytest.raises(ValueError, match="human_review_status disagrees"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            human_reviews=[approval],
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_candidate_freeze_rejects_nonempty_human_reviews(tmp_path: Path) -> None:
+    target_case, target_environment, model_review, approval = high_risk_bundle()
+
+    with pytest.raises(ValueError, match="candidate freeze.*human review"):
+        freeze_benchmark(
+            [(target_case, target_environment)],
+            [model_review],
+            tmp_path,
+            require_human_approval=False,
+            human_reviews=[approval],
+        )
+
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
+
+
+def test_candidate_freeze_derives_nonfinal_human_status(tmp_path: Path) -> None:
     target_case = case(human_review_status="pending")
     target_environment = environment()
     result = freeze_benchmark(
@@ -271,7 +494,32 @@ def test_candidate_freeze_preserves_pending_status(tmp_path: Path) -> None:
         tmp_path,
         require_human_approval=False,
     )
-    assert read_jsonl(result.audit_path)[0]["case"]["human_review_status"] == "pending"
+    audit_row = read_jsonl(result.audit_path)[0]
+    assert audit_row["case"]["human_review_status"] == "not_required"
+    assert audit_row["human_review"] is None
+
+
+def test_formal_freeze_derives_nonrequired_status_without_human_record(
+    tmp_path: Path,
+) -> None:
+    target_case = case(review_status="pending", human_review_status="pending")
+    target_environment = environment()
+    model_review = review(
+        target_case=target_case,
+        target_environment=target_environment,
+    )
+
+    result = freeze_benchmark(
+        [(target_case, target_environment)],
+        [model_review],
+        tmp_path,
+        human_reviews=[],
+    )
+
+    audit_row = read_jsonl(result.audit_path)[0]
+    assert audit_row["case"]["review_status"] == "approved"
+    assert audit_row["case"]["human_review_status"] == "not_required"
+    assert audit_row["human_review"] is None
 
 
 @pytest.mark.parametrize("kind", ["missing", "extra", "duplicate"])
@@ -479,16 +727,11 @@ def test_existing_different_file_is_not_overwritten(tmp_path: Path) -> None:
     assert len(list(tmp_path.iterdir())) == 1
 
 
-def test_non_validated_or_pending_review_case_is_rejected(tmp_path: Path) -> None:
+def test_non_validated_case_is_rejected(tmp_path: Path) -> None:
     generated = case(draft_status="generated")
     with pytest.raises(ValueError, match="draft_status"):
         freeze_benchmark(
             [(generated, environment())], [review(target_case=generated)], tmp_path
-        )
-    pending = case(review_status="pending")
-    with pytest.raises(ValueError, match="review_status"):
-        freeze_benchmark(
-            [(pending, environment())], [review(target_case=pending)], tmp_path
         )
 
 
@@ -510,7 +753,7 @@ def test_formal_freeze_recomputes_review_gate_and_only_accepts_approved_decision
 ) -> None:
     target_case = case(**case_overrides)
     target_environment = environment()
-    with pytest.raises(ValueError, match="human_review_status|approve|APPROVE"):
+    with pytest.raises(ValueError, match="human review|approve|APPROVE"):
         freeze_benchmark(
             [(target_case, target_environment)],
             [review(
@@ -520,6 +763,7 @@ def test_formal_freeze_recomputes_review_gate_and_only_accepts_approved_decision
             )],
             tmp_path,
         )
+    assert not tmp_path.exists() or list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -546,13 +790,22 @@ def test_candidate_freeze_allows_unfinished_or_nonapproval_reviews(
         tmp_path,
         require_human_approval=False,
     )
-    assert read_jsonl(result.audit_path)[0]["case"]["review_status"] == review_status
+    expected_status = {
+        "pending": "approved",
+        "revise": "revise",
+        "rejected": "rejected",
+    }[review_status]
+    audit_row = read_jsonl(result.audit_path)[0]
+    assert audit_row["case"]["review_status"] == expected_status
+    assert audit_row["human_review"] is None
 
 
-def test_candidate_freeze_rejects_human_rejection_and_applied_status_mismatch(
+@pytest.mark.parametrize("human_status", ["approved", "rejected"])
+def test_candidate_freeze_rejects_final_human_status_and_applied_status_mismatch(
     tmp_path: Path,
+    human_status: str,
 ) -> None:
-    rejected = case(human_review_status="rejected")
+    rejected = case(human_review_status=human_status)
     with pytest.raises(ValueError, match="human_review_status"):
         freeze_benchmark(
             [(rejected, environment())], [review(target_case=rejected)], tmp_path,

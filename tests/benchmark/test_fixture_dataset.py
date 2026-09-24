@@ -1385,11 +1385,13 @@ def test_high_risk_review_may_cite_controlled_environment_chunk(
     )
 
     reviewed_case = apply_review_gate(case, environment, chunks, claims, review)
-    approved_case = reviewed_case.model_copy(update={
-        "human_review_status": HumanReviewStatus.APPROVED,
-    })
     result = freeze_benchmark(
-        [(approved_case, environment)], [review], chunks, claims, tmp_path
+        [(reviewed_case, environment)],
+        [review],
+        chunks,
+        claims,
+        tmp_path,
+        require_human_approval=False,
     )
 
     assert result.case_count == 1
