@@ -34,7 +34,7 @@ from knowledge_gap_agent.retrieval.tokenizer import tokenize
 from knowledge_gap_agent.utils.canonical import canonical_json, sha256_hex
 
 
-ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FETCHED_AT = datetime.fromisoformat("2026-09-24T00:00:00+08:00")
 OUTDATED_UNTIL = datetime.fromisoformat("2026-09-23T23:59:59+08:00")
 ROUND1_CHANGED_AT = datetime.fromisoformat("2026-09-24T20:34:00+08:00")
@@ -376,14 +376,14 @@ TOPICS = (
 )
 
 
-def _source_path(spec: SourceSpec) -> Path:
-    return ROOT.joinpath(*Path(spec.local_path).parts)
+def _source_path(workspace_root: Path, spec: SourceSpec) -> Path:
+    return workspace_root.joinpath(*Path(spec.local_path).parts)
 
 
-def seed_raw_sources(external_root: Path) -> None:
+def seed_raw_sources(external_root: Path, workspace_root: Path) -> None:
     for spec in SOURCES:
         if spec.external_directory is None:
-            origin = ROOT.joinpath(*Path(spec.relative_path).parts)
+            origin = workspace_root.joinpath(*Path(spec.relative_path).parts)
         else:
             origin = external_root / spec.external_directory
             origin = origin.joinpath(*Path(spec.relative_path).parts)
@@ -396,16 +396,18 @@ def seed_raw_sources(external_root: Path) -> None:
                 f"固定来源内容与预期提交不一致：{spec.source_id} "
                 f"expected={spec.expected_hash} actual={actual_hash}"
             )
-        destination = _source_path(spec)
+        destination = _source_path(workspace_root, spec)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(normalized.encode("utf-8"))
 
 
-def load_documents() -> tuple[SourceManifest, tuple[SourceDocument, ...]]:
+def load_documents(
+    workspace_root: Path,
+) -> tuple[SourceManifest, tuple[SourceDocument, ...]]:
     entries: list[SourceManifestEntry] = []
     documents: list[SourceDocument] = []
     for spec in SOURCES:
-        path = _source_path(spec)
+        path = _source_path(workspace_root, spec)
         if not path.is_file():
             raise FileNotFoundError(
                 f"缺少仓库内固定来源副本：{spec.local_path}；"
@@ -737,8 +739,8 @@ def _validate_change_log(
             raise ValueError(f"change_log.jsonl 第 {line_number} 行不是规范 JSON")
 
 
-def _validate_round1_prompt() -> str:
-    prompt_path = ROOT / "fixtures" / "benchmark" / "reviewer_prompt_v1.md"
+def _validate_round1_prompt(workspace_root: Path) -> str:
+    prompt_path = workspace_root / "fixtures" / "benchmark" / "reviewer_prompt_v1.md"
     if not prompt_path.is_file():
         raise FileNotFoundError(f"缺少首轮 Reviewer 提示词：{prompt_path}")
     actual_hash = hashlib.sha256(prompt_path.read_bytes()).hexdigest()
@@ -750,10 +752,12 @@ def _validate_round1_prompt() -> str:
     return actual_hash
 
 
-def _load_round1_review_history(prompt_hash: str) -> tuple[
+def _load_round1_review_history(
+    workspace_root: Path, prompt_hash: str
+) -> tuple[
     tuple[ReviewInput, ...], tuple[ReviewRecord, ...]
 ]:
-    history_directory = ROOT / "fixtures" / "benchmark" / "review_history"
+    history_directory = workspace_root / "fixtures" / "benchmark" / "review_history"
     inputs_path = history_directory / "round-1-inputs.jsonl"
     reviews_path = history_directory / "round-1-reviews.jsonl"
     expected_hashes = {
@@ -801,12 +805,16 @@ def _load_round1_review_history(prompt_hash: str) -> tuple[
 
 
 def _validate_round2_review_history(
-    current_inputs_by_case: dict[str, ReviewInput], expected_case_ids: set[str]
+    workspace_root: Path,
+    current_inputs_by_case: dict[str, ReviewInput],
+    expected_case_ids: set[str],
 ) -> tuple[tuple[ReviewInput, ...], tuple[ReviewRecord, ...]]:
-    history_directory = ROOT / "fixtures" / "benchmark" / "review_history"
+    history_directory = workspace_root / "fixtures" / "benchmark" / "review_history"
     inputs_path = history_directory / "round-2-inputs.jsonl"
     reviews_path = history_directory / "round-2-reviews.jsonl"
-    prompt_path = ROOT / "fixtures" / "benchmark" / "reviewer_revision_prompt_v1.md"
+    prompt_path = (
+        workspace_root / "fixtures" / "benchmark" / "reviewer_revision_prompt_v1.md"
+    )
     expected_hashes = {
         inputs_path: ROUND2_INPUTS_HASH,
         reviews_path: ROUND2_REVIEWS_HASH,
@@ -922,9 +930,10 @@ def build_revision_records(
     return tuple(records)
 
 
-def build() -> None:
-    prompt_hash = _validate_round1_prompt()
-    manifest, documents = load_documents()
+def build(workspace_root: Path = REPOSITORY_ROOT) -> None:
+    workspace_root = workspace_root.resolve()
+    prompt_hash = _validate_round1_prompt(workspace_root)
+    manifest, documents = load_documents(workspace_root)
     base_chunks = tuple(
         chunk for document in documents for chunk in chunk_markdown(document)
     )
@@ -963,9 +972,11 @@ def build() -> None:
         for case in cases
         if case.base_question_id in ROUND1_REVISED_BASES
     }
-    round1_inputs, round1_reviews = _load_round1_review_history(prompt_hash)
+    round1_inputs, round1_reviews = _load_round1_review_history(
+        workspace_root, prompt_hash
+    )
     _, round2_reviews = _validate_round2_review_history(
-        review_inputs_by_case, round2_case_ids
+        workspace_root, review_inputs_by_case, round2_case_ids
     )
     revision_records = build_revision_records(
         cases, round1_inputs, round1_reviews, prompt_hash
@@ -985,7 +996,7 @@ def build() -> None:
     expected_review_bytes = _canonical_jsonl_bytes(
         tuple(review.model_dump(mode="json") for review in expected_reviews)
     )
-    reviews_path = ROOT / "fixtures" / "benchmark" / "reviews.jsonl"
+    reviews_path = workspace_root / "fixtures" / "benchmark" / "reviews.jsonl"
     reviews: tuple[ReviewRecord, ...] = ()
     if reviews_path.is_file() and reviews_path.stat().st_size:
         actual_review_bytes = reviews_path.read_bytes()
@@ -1030,31 +1041,33 @@ def build() -> None:
             if case.human_review_status is HumanReviewStatus.PENDING
         )
 
-    change_log_path = ROOT / "fixtures" / "benchmark" / "change_log.jsonl"
+    change_log_path = workspace_root / "fixtures" / "benchmark" / "change_log.jsonl"
     _validate_change_log(change_log_path, revision_records)
     _write_json(
-        ROOT / "fixtures" / "sources" / "manifest.json",
+        workspace_root / "fixtures" / "sources" / "manifest.json",
         manifest.model_dump(mode="json"),
     )
     _write_jsonl(
-        ROOT / "fixtures" / "corpus" / "documents.jsonl",
+        workspace_root / "fixtures" / "corpus" / "documents.jsonl",
         tuple(document.model_dump(mode="json") for document in documents),
     )
     _write_jsonl(
-        ROOT / "fixtures" / "corpus" / "chunks.jsonl",
+        workspace_root / "fixtures" / "corpus" / "chunks.jsonl",
         tuple(chunk.model_dump(mode="json") for chunk in chunks),
     )
     _write_jsonl(
-        ROOT / "fixtures" / "corpus" / "claims.jsonl",
+        workspace_root / "fixtures" / "corpus" / "claims.jsonl",
         tuple(claim.model_dump(mode="json") for claim in claims),
     )
-    _write_jsonl(ROOT / "fixtures" / "benchmark" / "drafts.jsonl", drafts)
     _write_jsonl(
-        ROOT / "fixtures" / "benchmark" / "review_inputs.jsonl",
+        workspace_root / "fixtures" / "benchmark" / "drafts.jsonl", drafts
+    )
+    _write_jsonl(
+        workspace_root / "fixtures" / "benchmark" / "review_inputs.jsonl",
         tuple(item.model_dump(mode="json") for item in review_inputs),
     )
     _write_jsonl(
-        ROOT / "fixtures" / "benchmark" / "human_review_queue.jsonl",
+        workspace_root / "fixtures" / "benchmark" / "human_review_queue.jsonl",
         tuple(item.model_dump(mode="json") for item in queue_records),
     )
 
@@ -1062,6 +1075,12 @@ def build() -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="从仓库内固定 raw 来源确定性构建第二天语料与候选基准"
+    )
+    parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=REPOSITORY_ROOT,
+        help="读取和写入 fixtures 的显式工作区根目录",
     )
     parser.add_argument(
         "--seed-source-root",
@@ -1073,9 +1092,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    workspace_root = args.workspace_root.resolve()
     if args.seed_source_root is not None:
-        seed_raw_sources(args.seed_source_root.resolve())
-    build()
+        seed_raw_sources(args.seed_source_root.resolve(), workspace_root)
+    build(workspace_root)
 
 
 if __name__ == "__main__":

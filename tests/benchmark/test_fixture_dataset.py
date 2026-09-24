@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -272,6 +273,46 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def copy_fixture_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace"
+    shutil.copytree(ROOT / "fixtures", workspace / "fixtures")
+    return workspace
+
+
+def workspace_fixture_path(workspace: Path, path: Path) -> Path:
+    return workspace / path.relative_to(ROOT)
+
+
+def fixture_tree_hashes(workspace: Path) -> dict[Path, str]:
+    fixtures = workspace / "fixtures"
+    return {
+        path.relative_to(workspace): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in fixtures.rglob("*")
+        if path.is_file()
+    }
+
+
+def builder_command(workspace: Path) -> list[str]:
+    return [sys.executable, str(SCRIPT), "--workspace-root", str(workspace)]
+
+
+def run_builder(workspace: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        builder_command(workspace),
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def real_fixtures_remain_unchanged():
+    before = fixture_tree_hashes(ROOT)
+    yield
+    assert fixture_tree_hashes(ROOT) == before
+
+
 @pytest.fixture(scope="module")
 def fixture_data():
     missing = [str(path.relative_to(ROOT)) for path in EXPECTED_FILES if not path.is_file()]
@@ -292,6 +333,17 @@ def fixture_data():
 def test_required_fixture_files_exist() -> None:
     missing = [str(path.relative_to(ROOT)) for path in EXPECTED_FILES if not path.is_file()]
     assert not missing, f"缺少第二天夹具文件：{missing}"
+
+
+def test_rebuild_uses_explicit_isolated_workspace(tmp_path: Path) -> None:
+    workspace = copy_fixture_workspace(tmp_path)
+    real_before = fixture_tree_hashes(ROOT)
+
+    result = run_builder(workspace)
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "fixtures/benchmark/drafts.jsonl").is_file()
+    assert fixture_tree_hashes(ROOT) == real_before
 
 
 def test_manifest_fixes_eight_commit_pinned_normalized_sources(fixture_data) -> None:
@@ -1023,10 +1075,12 @@ def test_change_log_records_nonhuman_round1_revision(fixture_data) -> None:
 
 
 def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
-    fixture_data,
+    fixture_data, tmp_path: Path,
 ) -> None:
     del fixture_data
-    original = CHANGE_LOG_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    original = change_log_path.read_bytes()
     existing_test_record = {
         "actor": "human_test",
         "human_approved": False,
@@ -1043,113 +1097,92 @@ def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
         canonical_json(existing_test_record) + "\n"
     ).encode("utf-8")
     concurrent = (canonical_json(concurrent_test_record) + "\n").encode("utf-8")
-    try:
-        CHANGE_LOG_PATH.write_bytes(existing)
-        process = subprocess.Popen(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        with CHANGE_LOG_PATH.open("ab") as stream:
-            stream.write(concurrent)
-        stdout, stderr = process.communicate(timeout=60)
-        assert process.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
-        assert CHANGE_LOG_PATH.read_bytes() == existing + concurrent
-    finally:
-        CHANGE_LOG_PATH.write_bytes(original)
+    change_log_path.write_bytes(existing)
+    process = subprocess.Popen(
+        builder_command(workspace),
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    with change_log_path.open("ab") as stream:
+        stream.write(concurrent)
+    stdout, stderr = process.communicate(timeout=60)
+    assert process.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
+    assert change_log_path.read_bytes() == existing + concurrent
 
 
 @pytest.mark.parametrize("damaged_state", ("empty", "missing"))
 def test_rebuild_rejects_missing_or_empty_change_log_before_writing_outputs(
-    fixture_data, damaged_state: str,
+    fixture_data, tmp_path: Path, damaged_state: str,
 ) -> None:
     del fixture_data
-    original_log = CHANGE_LOG_PATH.read_bytes()
-    original_drafts = DRAFTS_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
     sentinel = b"test sentinel: damaged change log must fail before writes\n"
-    try:
-        if damaged_state == "empty":
-            CHANGE_LOG_PATH.write_bytes(b"")
-        else:
-            CHANGE_LOG_PATH.unlink()
-        DRAFTS_PATH.write_bytes(sentinel)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "change_log.jsonl" in result.stderr
-        if damaged_state == "empty":
-            assert CHANGE_LOG_PATH.read_bytes() == b""
-        else:
-            assert not CHANGE_LOG_PATH.exists()
-        assert DRAFTS_PATH.read_bytes() == sentinel
-    finally:
-        CHANGE_LOG_PATH.write_bytes(original_log)
-        DRAFTS_PATH.write_bytes(original_drafts)
+    if damaged_state == "empty":
+        change_log_path.write_bytes(b"")
+    else:
+        change_log_path.unlink()
+    drafts_path.write_bytes(sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "change_log.jsonl" in result.stderr
+    if damaged_state == "empty":
+        assert change_log_path.read_bytes() == b""
+    else:
+        assert not change_log_path.exists()
+    assert drafts_path.read_bytes() == sentinel
 
 
 def test_rebuild_rejects_tampered_round1_prompt_before_writing_outputs(
-    fixture_data,
+    fixture_data, tmp_path: Path,
 ) -> None:
     del fixture_data
-    original_prompt = REVIEWER_PROMPT_PATH.read_bytes()
-    original_drafts = DRAFTS_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    prompt_path = workspace_fixture_path(workspace, REVIEWER_PROMPT_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    original_prompt = prompt_path.read_bytes()
     tampered_prompt = original_prompt + b"\n"
     sentinel = b"test sentinel: prompt mismatch must fail before writes\n"
-    try:
-        REVIEWER_PROMPT_PATH.write_bytes(tampered_prompt)
-        DRAFTS_PATH.write_bytes(sentinel)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "reviewer_prompt_v1.md" in result.stderr
-        assert REVIEWER_PROMPT_PATH.read_bytes() == tampered_prompt
-        assert DRAFTS_PATH.read_bytes() == sentinel
-    finally:
-        REVIEWER_PROMPT_PATH.write_bytes(original_prompt)
-        DRAFTS_PATH.write_bytes(original_drafts)
+    prompt_path.write_bytes(tampered_prompt)
+    drafts_path.write_bytes(sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "reviewer_prompt_v1.md" in result.stderr
+    assert prompt_path.read_bytes() == tampered_prompt
+    assert drafts_path.read_bytes() == sentinel
 
 
 def test_rebuild_rejects_changed_change_log_prefix_before_writing_outputs(
-    fixture_data,
+    fixture_data, tmp_path: Path,
 ) -> None:
     del fixture_data
-    original_log = CHANGE_LOG_PATH.read_bytes()
-    original_drafts = DRAFTS_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    original_log = change_log_path.read_bytes()
     tampered = original_log.replace(
         b'"independent_reviewer_and_quality_audit"',
         b'"xndependent_reviewer_and_quality_audit"',
         1,
     )
     assert tampered != original_log
-    try:
-        CHANGE_LOG_PATH.write_bytes(tampered)
-        DRAFTS_PATH.write_bytes(b"test sentinel: builder must fail before writes\n")
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "change_log.jsonl" in result.stderr
-        assert CHANGE_LOG_PATH.read_bytes() == tampered
-        assert DRAFTS_PATH.read_bytes() == b"test sentinel: builder must fail before writes\n"
-    finally:
-        CHANGE_LOG_PATH.write_bytes(original_log)
-        DRAFTS_PATH.write_bytes(original_drafts)
+    sentinel = b"test sentinel: builder must fail before writes\n"
+    change_log_path.write_bytes(tampered)
+    drafts_path.write_bytes(sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "change_log.jsonl" in result.stderr
+    assert change_log_path.read_bytes() == tampered
+    assert drafts_path.read_bytes() == sentinel
 
 
 @pytest.mark.parametrize(
@@ -1162,25 +1195,20 @@ def test_rebuild_rejects_changed_change_log_prefix_before_writing_outputs(
     ),
 )
 def test_rebuild_rejects_invalid_change_log_append(
-    fixture_data, invalid_suffix: bytes,
+    fixture_data, tmp_path: Path, invalid_suffix: bytes,
 ) -> None:
     del fixture_data
-    original = CHANGE_LOG_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    original = change_log_path.read_bytes()
     invalid = original + invalid_suffix
-    try:
-        CHANGE_LOG_PATH.write_bytes(invalid)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "change_log.jsonl" in result.stderr
-        assert CHANGE_LOG_PATH.read_bytes() == invalid
-    finally:
-        CHANGE_LOG_PATH.write_bytes(original)
+    change_log_path.write_bytes(invalid)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "change_log.jsonl" in result.stderr
+    assert change_log_path.read_bytes() == invalid
 
 
 def test_pending_fixture_review_can_apply_gate_then_freeze_without_rebinding(
@@ -1281,11 +1309,14 @@ def test_high_risk_review_may_cite_controlled_environment_chunk(
 
 
 @pytest.mark.parametrize("damage", ("partial", "extra", "stale"))
-def test_rebuild_rejects_invalid_review_set_before_writing_outputs(damage: str) -> None:
-    original_reviews = REVIEWS_PATH.read_bytes()
-    original_drafts = DRAFTS_PATH.read_bytes()
-    queue_existed = HUMAN_REVIEW_QUEUE_PATH.exists()
-    original_queue = HUMAN_REVIEW_QUEUE_PATH.read_bytes() if queue_existed else b""
+def test_rebuild_rejects_invalid_review_set_before_writing_outputs(
+    tmp_path: Path, damage: str,
+) -> None:
+    workspace = copy_fixture_workspace(tmp_path)
+    reviews_path = workspace_fixture_path(workspace, REVIEWS_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    queue_path = workspace_fixture_path(workspace, HUMAN_REVIEW_QUEUE_PATH)
+    original_reviews = reviews_path.read_bytes()
     rows = [json.loads(line) for line in original_reviews.decode("utf-8").splitlines()]
     if damage == "partial":
         rows = rows[:-1]
@@ -1299,28 +1330,16 @@ def test_rebuild_rejects_invalid_review_set_before_writing_outputs(damage: str) 
     invalid_reviews = "".join(f"{canonical_json(row)}\n" for row in rows).encode("utf-8")
     drafts_sentinel = b"test sentinel: invalid reviews must fail before writes\n"
     queue_sentinel = b"test sentinel: queue must not be overwritten\n"
-    try:
-        REVIEWS_PATH.write_bytes(invalid_reviews)
-        DRAFTS_PATH.write_bytes(drafts_sentinel)
-        HUMAN_REVIEW_QUEUE_PATH.write_bytes(queue_sentinel)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert REVIEWS_PATH.read_bytes() == invalid_reviews
-        assert DRAFTS_PATH.read_bytes() == drafts_sentinel
-        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == queue_sentinel
-    finally:
-        REVIEWS_PATH.write_bytes(original_reviews)
-        DRAFTS_PATH.write_bytes(original_drafts)
-        if queue_existed:
-            HUMAN_REVIEW_QUEUE_PATH.write_bytes(original_queue)
-        elif HUMAN_REVIEW_QUEUE_PATH.exists():
-            HUMAN_REVIEW_QUEUE_PATH.unlink()
+    reviews_path.write_bytes(invalid_reviews)
+    drafts_path.write_bytes(drafts_sentinel)
+    queue_path.write_bytes(queue_sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert reviews_path.read_bytes() == invalid_reviews
+    assert drafts_path.read_bytes() == drafts_sentinel
+    assert queue_path.read_bytes() == queue_sentinel
 
 
 @pytest.mark.parametrize(
@@ -1340,17 +1359,20 @@ def test_rebuild_rejects_invalid_review_set_before_writing_outputs(damage: str) 
     ),
 )
 def test_rebuild_rejects_reviews_different_from_archived_merge_before_writes(
-    mutation: str,
+    tmp_path: Path, mutation: str,
 ) -> None:
-    original_reviews = REVIEWS_PATH.read_bytes()
-    original_drafts = DRAFTS_PATH.read_bytes()
-    original_queue = HUMAN_REVIEW_QUEUE_PATH.read_bytes()
+    workspace = copy_fixture_workspace(tmp_path)
+    reviews_path = workspace_fixture_path(workspace, REVIEWS_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    queue_path = workspace_fixture_path(workspace, HUMAN_REVIEW_QUEUE_PATH)
+    review_inputs_path = workspace_fixture_path(workspace, REVIEW_INPUTS_PATH)
+    original_reviews = reviews_path.read_bytes()
     rows = [json.loads(line) for line in original_reviews.decode("utf-8").splitlines()]
     inputs_by_case = {
         item.case.case_id: item
         for item in (
             ReviewInput.model_validate_json(line)
-            for line in REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
+            for line in review_inputs_path.read_text(encoding="utf-8").splitlines()
         )
     }
 
@@ -1403,60 +1425,41 @@ def test_rebuild_rejects_reviews_different_from_archived_merge_before_writes(
         invalid_reviews = invalid_reviews.replace(b'{"case_id"', b'{ "case_id"', 1)
     drafts_sentinel = b"test sentinel: archived merge mismatch must fail before writes\n"
     queue_sentinel = b"test sentinel: archived merge mismatch must preserve queue\n"
-    try:
-        REVIEWS_PATH.write_bytes(invalid_reviews)
-        DRAFTS_PATH.write_bytes(drafts_sentinel)
-        HUMAN_REVIEW_QUEUE_PATH.write_bytes(queue_sentinel)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode != 0
-        assert REVIEWS_PATH.read_bytes() == invalid_reviews
-        assert DRAFTS_PATH.read_bytes() == drafts_sentinel
-        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == queue_sentinel
-    finally:
-        REVIEWS_PATH.write_bytes(original_reviews)
-        DRAFTS_PATH.write_bytes(original_drafts)
-        HUMAN_REVIEW_QUEUE_PATH.write_bytes(original_queue)
+    reviews_path.write_bytes(invalid_reviews)
+    drafts_path.write_bytes(drafts_sentinel)
+    queue_path.write_bytes(queue_sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert reviews_path.read_bytes() == invalid_reviews
+    assert drafts_path.read_bytes() == drafts_sentinel
+    assert queue_path.read_bytes() == queue_sentinel
 
 
-def test_empty_reviews_keep_pending_drafts_and_empty_human_queue() -> None:
-    original_reviews = REVIEWS_PATH.read_bytes()
-    try:
-        REVIEWS_PATH.write_bytes(b"")
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        pending_cases = tuple(
-            BenchmarkCase.model_validate(row["case"])
-            for row in read_jsonl(DRAFTS_PATH)
-        )
-        assert REVIEWS_PATH.read_bytes() == b""
-        assert all(case.review_status is ReviewStatus.PENDING for case in pending_cases)
-        assert all(
-            case.human_review_status is HumanReviewStatus.NOT_REQUIRED
-            for case in pending_cases
-        )
-        assert HUMAN_REVIEW_QUEUE_PATH.read_bytes() == b""
-    finally:
-        REVIEWS_PATH.write_bytes(original_reviews)
-        restore = subprocess.run(
-            [sys.executable, str(SCRIPT)],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert restore.returncode == 0, restore.stderr
+def test_empty_reviews_keep_pending_drafts_and_empty_human_queue(
+    tmp_path: Path,
+) -> None:
+    workspace = copy_fixture_workspace(tmp_path)
+    reviews_path = workspace_fixture_path(workspace, REVIEWS_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    queue_path = workspace_fixture_path(workspace, HUMAN_REVIEW_QUEUE_PATH)
+    reviews_path.write_bytes(b"")
+
+    result = run_builder(workspace)
+
+    assert result.returncode == 0, result.stderr
+    pending_cases = tuple(
+        BenchmarkCase.model_validate(row["case"])
+        for row in read_jsonl(drafts_path)
+    )
+    assert reviews_path.read_bytes() == b""
+    assert all(case.review_status is ReviewStatus.PENDING for case in pending_cases)
+    assert all(
+        case.human_review_status is HumanReviewStatus.NOT_REQUIRED
+        for case in pending_cases
+    )
+    assert queue_path.read_bytes() == b""
 
 
 def test_jsonl_is_canonical_and_reviewer_outputs_are_separated(fixture_data) -> None:
@@ -1486,8 +1489,11 @@ def test_jsonl_is_canonical_and_reviewer_outputs_are_separated(fixture_data) -> 
     assert not ROUND2_PROPOSED_REVIEWS_PATH.exists()
 
 
-def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> None:
+def test_rebuild_is_byte_identical_without_external_sources(
+    fixture_data, tmp_path: Path,
+) -> None:
     del fixture_data
+    workspace = copy_fixture_workspace(tmp_path)
     generated = (
         MANIFEST_PATH,
         DOCUMENTS_PATH,
@@ -1503,15 +1509,12 @@ def test_rebuild_is_byte_identical_without_external_sources(fixture_data) -> Non
         HUMAN_REVIEW_QUEUE_PATH,
         CHANGE_LOG_PATH,
     )
-    before = {path: path.read_bytes() for path in generated}
-
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT)],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
+    isolated_generated = tuple(
+        workspace_fixture_path(workspace, path) for path in generated
     )
+    before = {path: path.read_bytes() for path in isolated_generated}
+
+    result = run_builder(workspace)
 
     assert result.returncode == 0, result.stderr
-    assert {path: path.read_bytes() for path in generated} == before
+    assert {path: path.read_bytes() for path in isolated_generated} == before
