@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from knowledge_gap_agent.benchmark.models import (
+    HumanRevisionRecord,
     KnowledgeEnvironment,
     compute_environment_hash,
 )
@@ -735,8 +736,17 @@ def _validate_change_log(
             ) from error
         if not isinstance(value, dict):
             raise ValueError(f"change_log.jsonl 第 {line_number} 行必须是 JSON 对象")
-        if line != canonical_json(value):
-            raise ValueError(f"change_log.jsonl 第 {line_number} 行不是规范 JSON")
+        try:
+            record = HumanRevisionRecord.model_validate(value)
+        except ValueError as error:
+            raise ValueError(
+                f"change_log.jsonl 第 {line_number} 行不是有效的人工修订记录"
+            ) from error
+        canonical_record = canonical_json(record.model_dump(mode="json"))
+        if line != canonical_record:
+            raise ValueError(
+                f"change_log.jsonl 第 {line_number} 行不是规范人工修订记录"
+            )
 
 
 def _validate_round1_prompt(workspace_root: Path) -> str:

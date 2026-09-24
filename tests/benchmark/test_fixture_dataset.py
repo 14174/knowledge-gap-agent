@@ -11,7 +11,10 @@ from pathlib import Path
 import pytest
 
 import knowledge_gap_agent.benchmark.review as review_module
-from knowledge_gap_agent.benchmark.models import KnowledgeEnvironment
+from knowledge_gap_agent.benchmark.models import (
+    HumanRevisionRecord,
+    KnowledgeEnvironment,
+)
 from knowledge_gap_agent.benchmark.review import (
     ReviewDecision,
     ReviewInput,
@@ -305,6 +308,23 @@ def run_builder(workspace: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def human_revision_payload(**updates: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "1.0",
+        "record_type": "human_review_revision",
+        "case_id": "case-human-review-regression",
+        "actor": "human-reviewer",
+        "reason": "按终审意见更新问题与证据关系。",
+        "before_review_target_hash": "a" * 64,
+        "after_review_target_hash": "b" * 64,
+        "before_summary": "问题未明确要求核对证据时效。",
+        "after_summary": "问题已明确要求比较旧主张与当前主张。",
+        "changed_at": "2026-09-25T10:00:00+00:00",
+    }
+    payload.update(updates)
+    return payload
 
 
 @pytest.fixture(autouse=True)
@@ -1130,12 +1150,20 @@ def test_revised_questions_make_both_required_claims_explicit(fixture_data) -> N
 def test_change_log_records_nonhuman_round1_revision(fixture_data) -> None:
     del fixture_data
     revision_model = getattr(review_module, "ReviewRevisionRecord")
+    lines = CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()
     records = tuple(
         revision_model.model_validate_json(line)
-        for line in CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+        for line in lines[:2]
+    )
+    human_revisions = tuple(
+        HumanRevisionRecord.model_validate_json(line) for line in lines[2:]
     )
 
     assert len(records) == 2
+    assert all(
+        record.record_type == "human_review_revision"
+        for record in human_revisions
+    )
     assert {record.base_question_id for record in records} == set(REVISED_QUESTIONS)
     assert all(record.human_approved is False for record in records)
     assert all(record.actor == "independent_reviewer_and_quality_audit" for record in records)
@@ -1161,6 +1189,25 @@ def test_change_log_records_nonhuman_round1_revision(fixture_data) -> None:
         assert len(record.quality_audit_case_ids) == 1
 
 
+def test_rebuild_preserves_valid_human_revision_append_verbatim(
+    fixture_data, tmp_path: Path,
+) -> None:
+    del fixture_data
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    record = HumanRevisionRecord.model_validate(human_revision_payload())
+    appended = (
+        canonical_json(record.model_dump(mode="json")) + "\n"
+    ).encode("utf-8")
+    expected = change_log_path.read_bytes() + appended
+    change_log_path.write_bytes(expected)
+
+    result = run_builder(workspace)
+
+    assert result.returncode == 0, result.stderr
+    assert change_log_path.read_bytes() == expected
+
+
 def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
     fixture_data, tmp_path: Path,
 ) -> None:
@@ -1168,18 +1215,16 @@ def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
     workspace = copy_fixture_workspace(tmp_path)
     change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
     original = change_log_path.read_bytes()
-    existing_test_record = {
-        "actor": "human_test",
-        "human_approved": False,
-        "record_type": "append_only_regression",
-        "test_only": True,
-    }
-    concurrent_test_record = {
-        "actor": "human_test",
-        "human_approved": False,
-        "record_type": "concurrent_append_regression",
-        "test_only": True,
-    }
+    existing_test_record = HumanRevisionRecord.model_validate(
+        human_revision_payload(case_id="case-existing-human-revision")
+    ).model_dump(mode="json")
+    concurrent_test_record = HumanRevisionRecord.model_validate(
+        human_revision_payload(
+            case_id="case-concurrent-human-revision",
+            before_review_target_hash="c" * 64,
+            after_review_target_hash="d" * 64,
+        )
+    ).model_dump(mode="json")
     existing = original + (
         canonical_json(existing_test_record) + "\n"
     ).encode("utf-8")
@@ -1296,6 +1341,73 @@ def test_rebuild_rejects_invalid_change_log_append(
     assert result.returncode != 0
     assert "change_log.jsonl" in result.stderr
     assert change_log_path.read_bytes() == invalid
+
+
+@pytest.mark.parametrize(
+    "invalid_payload",
+    (
+        human_revision_payload(after_review_target_hash="a" * 64),
+        human_revision_payload(changed_at="2026-09-25T10:00:00"),
+        human_revision_payload(after_summary=""),
+        human_revision_payload(after_summary="已修复"),
+        {key: value for key, value in human_revision_payload().items()
+         if key != "actor"},
+        human_revision_payload(unexpected="not allowed"),
+    ),
+    ids=(
+        "same-hash",
+        "naive-changed-at",
+        "blank-summary",
+        "placeholder-summary",
+        "missing-field",
+        "extra-field",
+    ),
+)
+def test_rebuild_rejects_invalid_human_revision_before_writing_outputs(
+    fixture_data,
+    tmp_path: Path,
+    invalid_payload: dict[str, object],
+) -> None:
+    del fixture_data
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    invalid = change_log_path.read_bytes() + (
+        canonical_json(invalid_payload) + "\n"
+    ).encode("utf-8")
+    sentinel = b"test sentinel: invalid human revision must fail before writes\n"
+    change_log_path.write_bytes(invalid)
+    drafts_path.write_bytes(sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "change_log.jsonl" in result.stderr
+    assert change_log_path.read_bytes() == invalid
+    assert drafts_path.read_bytes() == sentinel
+
+
+def test_rebuild_rejects_noncanonical_human_revision_before_writing_outputs(
+    fixture_data, tmp_path: Path,
+) -> None:
+    del fixture_data
+    workspace = copy_fixture_workspace(tmp_path)
+    change_log_path = workspace_fixture_path(workspace, CHANGE_LOG_PATH)
+    drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
+    noncanonical_line = json.dumps(
+        human_revision_payload(), ensure_ascii=False, sort_keys=True
+    ).encode("utf-8") + b"\n"
+    invalid = change_log_path.read_bytes() + noncanonical_line
+    sentinel = b"test sentinel: noncanonical human revision must fail before writes\n"
+    change_log_path.write_bytes(invalid)
+    drafts_path.write_bytes(sentinel)
+
+    result = run_builder(workspace)
+
+    assert result.returncode != 0
+    assert "change_log.jsonl" in result.stderr
+    assert change_log_path.read_bytes() == invalid
+    assert drafts_path.read_bytes() == sentinel
 
 
 def test_pending_fixture_review_can_apply_gate_then_freeze_without_rebinding(
@@ -1573,7 +1685,7 @@ def test_jsonl_is_canonical_and_reviewer_outputs_are_separated(fixture_data) -> 
         assert all(line == canonical_json(json.loads(line)) for line in lines)
     assert len(REVIEWS_PATH.read_text(encoding="utf-8").splitlines()) == 48
     assert len(HUMAN_REVIEW_QUEUE_PATH.read_text(encoding="utf-8").splitlines()) == 24
-    assert len(CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()) == 2
+    assert len(CHANGE_LOG_PATH.read_text(encoding="utf-8").splitlines()) >= 2
     assert not PROPOSED_REVIEWS_PATH.exists()
     assert not ROUND2_PROPOSED_REVIEWS_PATH.exists()
 
