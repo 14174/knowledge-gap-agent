@@ -23,6 +23,12 @@ def _reject_blank_items(values: tuple[str, ...], field_name: str) -> tuple[str, 
     return values
 
 
+def _require_timezone(value: datetime, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must include timezone information")
+    return value
+
+
 class SourceDocument(BaseModel):
     """固定版本的来源文档。"""
 
@@ -42,6 +48,11 @@ class SourceDocument(BaseModel):
     @classmethod
     def reject_blank_strings(cls, value: str, info: Any) -> str:
         return _reject_blank(value, info.field_name)
+
+    @field_validator("fetched_at")
+    @classmethod
+    def require_fetched_at_timezone(cls, value: datetime) -> datetime:
+        return _require_timezone(value, "fetched_at")
 
     @model_validator(mode="after")
     def validate_content_hash(self):
@@ -105,6 +116,15 @@ class Claim(BaseModel):
     @classmethod
     def reject_blank_list_items(cls, value: tuple[str, ...], info: Any) -> tuple[str, ...]:
         return _reject_blank_items(value, info.field_name)
+
+    @field_validator("valid_from", "valid_until")
+    @classmethod
+    def require_validity_timezone(
+        cls, value: datetime | None, info: Any
+    ) -> datetime | None:
+        if value is None:
+            return None
+        return _require_timezone(value, info.field_name)
 
     @model_validator(mode="after")
     def validate_conflicts_and_validity(self):

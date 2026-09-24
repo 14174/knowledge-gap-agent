@@ -89,6 +89,43 @@ def test_claim_rejects_reversed_validity_period() -> None:
         )
 
 
+def test_source_document_rejects_naive_fetched_at() -> None:
+    with pytest.raises(ValidationError, match="fetched_at"):
+        make_document(fetched_at=datetime(2026, 9, 25))
+
+
+@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
+def test_claim_rejects_naive_validity_time(field: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        make_claim(**{field: datetime(2026, 9, 25)})
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"fetched_at": datetime(2026, 9, 25)},
+        {"content_hash": "0" * 64},
+    ],
+)
+def test_source_document_dump_then_validate_rejects_model_copy_bypasses(
+    changes: dict[str, object],
+) -> None:
+    bypassed = make_document().model_copy(update=changes)
+
+    # 不直接 model_validate(instance)：它不是项目跨信任边界的重验方式。
+    with pytest.raises(ValidationError):
+        SourceDocument.model_validate(bypassed.model_dump(mode="python"))
+
+
+@pytest.mark.parametrize("field", ["valid_from", "valid_until"])
+def test_claim_dump_then_validate_rejects_naive_model_copy_time(field: str) -> None:
+    bypassed = make_claim().model_copy(update={field: datetime(2026, 9, 25)})
+
+    # 不直接 model_validate(instance)；先转储再重验不得冒日期比较的裸 TypeError。
+    with pytest.raises(ValidationError, match=field):
+        Claim.model_validate(bypassed.model_dump(mode="python"))
+
+
 @pytest.mark.parametrize(
     ("factory", "field"),
     [(make_document, "source_id"), (make_chunk, "text"), (make_claim, "statement")],
