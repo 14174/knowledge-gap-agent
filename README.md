@@ -105,6 +105,8 @@ agents/        Researcher，以及后续待验证的 Reviewer/Reporter
 
 完整模块设计、数据流、指标定义和实验矩阵见 [项目计划](docs/PROJECT_PLAN.md)。
 
+使用 Codex 或其他 AI Coding 工具参与开发前，请先阅读 [Codex 协作规则](AGENTS.md) 和 [AI Coding 工程规范](docs/AI_CODING_GUIDE.md)。二者规定了模块边界、测试驱动流程、数据门禁和交接格式。
+
 ## 项目状态
 
 - 需求与总体架构：已确定
