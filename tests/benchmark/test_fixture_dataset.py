@@ -254,7 +254,7 @@ CURRENT_CLAIM_CONTRACTS = {
         ("自动化评估可能遗漏的问题", "人工验证仍然是不可或缺的"),
     ),
 }
-CONTROLLED_EXCLUSIVITY_MARKERS = {
+FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS = {
     "01": ("禁止排序映射键或数组元素", "同时排序所有映射键和所有数组元素"),
     "02": ("普通 `list` 是唯一允许的集合容器", "自定义不可变 `list` 子类是唯一允许的集合容器"),
     "03": ("实现完成后才允许编写测试", "测试必须在实现前写好"),
@@ -270,6 +270,14 @@ CONTROLLED_EXCLUSIVITY_MARKERS = {
     ),
     "11": ("完成全部框架与数学理论前禁止运行示例", "只允许复制并运行完整框架"),
     "12": ("唯一自动批准条件是两个模型结论一致", "唯一自动批准条件是复核置信度不低于 `0.8`"),
+}
+# 来源提交与冻结夹具重建之间暂时保留两份明确的文本契约。
+AUTHORED_CONTROLLED_EXCLUSIVITY_MARKERS = {
+    **FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS,
+    "01": (
+        "禁止排序映射键或数组元素",
+        "在规则 v0.9 中，配置哈希必须按映射键排序，但使用 UTF-16 编码，并允许 `NaN` 与无穷大参与序列化。",
+    ),
 }
 
 
@@ -685,7 +693,7 @@ def test_controlled_source_uses_neutral_ids_and_explicit_exclusive_propositions(
         for number in range(1, 13)
         for polarity in ("A", "B")
     ]
-    for first_marker, second_marker in CONTROLLED_EXCLUSIVITY_MARKERS.values():
+    for first_marker, second_marker in AUTHORED_CONTROLLED_EXCLUSIVITY_MARKERS.values():
         assert text.count(first_marker) == 1
         assert text.count(second_marker) == 1
 
@@ -697,7 +705,7 @@ def test_generated_controlled_claims_preserve_twelve_semantic_exclusivity_canari
     chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     claims_by_id = {claim.claim_id: claim for claim in claims}
 
-    for number, (first_marker, second_marker) in CONTROLLED_EXCLUSIVITY_MARKERS.items():
+    for number, (first_marker, second_marker) in FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS.items():
         first_id = f"distractor-{number}-a"
         second_id = f"distractor-{number}-b"
         assert first_id in claims_by_id
