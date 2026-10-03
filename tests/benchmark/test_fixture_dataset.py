@@ -61,6 +61,8 @@ ROUND1_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-1-inputs.jsonl"
 ROUND1_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-1-reviews.jsonl"
 ROUND2_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-2-inputs.jsonl"
 ROUND2_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-2-reviews.jsonl"
+ROUND3_INPUTS_PATH = REVIEW_HISTORY_DIR / "round-3-inputs.jsonl"
+ROUND3_REVIEWS_PATH = REVIEW_HISTORY_DIR / "round-3-reviews.jsonl"
 PROPOSED_REVIEWS_PATH = ROOT / "fixtures" / "benchmark" / "reviews.proposed.jsonl"
 ROUND2_PROPOSED_REVIEWS_PATH = (
     ROOT / "fixtures" / "benchmark" / "reviews.round2.proposed.jsonl"
@@ -73,7 +75,7 @@ EXPECTED_SOURCE_HASHES = {
     "project-experiment-contract": "eedddd18ed841e8df3aba21a5568daed3952f060df4a2b4715432cfbf95c77cf",
     "project-ai-coding-guide": "6e4e4592dbe85587c7984b0d79562657dda97701f1f14037262b6081fc9fe569",
     "project-decisions": "2d182cc774986354fdfc526a0fbc01ff654edcce4851e95b58bfee4297bd2502",
-    "controlled-benchmark-distractors": "b94b3c1acf993941667dfb37d0033d73c9ce4e59d467680f8eab5fbf97a7ea5d",
+    "controlled-benchmark-distractors": "61661643db00fd11301c04905bd32ebf64b60f3c2e56078503c3c203a2c7717e",
     "agent-learning-hub-readme": "0a2a4329a547a54462ab2f5a13525e8233901588486e57b0afadde18097d20d6",
     "hello-agents-chapter-7": "a6818e1957eb62e6983ab07e381f0a0d73aef13026152aa87bfa97245922b78e",
     "hello-agents-chapter-8": "97262da77f3ae5fa9745e532bb0fcf14066546775da8644172f40d1a8048dce6",
@@ -83,7 +85,7 @@ EXPECTED_COMMITS = {
     "project-experiment-contract": "19e13d048cf0e6ba11695f4d6dd954cb8a364ebb",
     "project-ai-coding-guide": "55e1c2f40356558c0cfafcb639830201000af20f",
     "project-decisions": "55e1c2f40356558c0cfafcb639830201000af20f",
-    "controlled-benchmark-distractors": "a866aee6b000331ba2fa0e4079b3c8b902e52e20",
+    "controlled-benchmark-distractors": "71b29bacd9e77b051a7e7b12fce710386d473dd9",
     "agent-learning-hub-readme": "dddf777dde6788228136862f270203424a28efbc",
     "hello-agents-chapter-7": "5caceca4e4c9a3d25cd14627881436953f4d6912",
     "hello-agents-chapter-8": "5caceca4e4c9a3d25cd14627881436953f4d6912",
@@ -170,8 +172,8 @@ CURRENT_CLAIM_CONTRACTS = {
         ("内部使用 `tuple`", "JSONL 持久化继续输出数组"),
     ),
     "current-02-b": (
-        "冻结模型不应使用不可变 list 子类，因为基类方法可绕过覆盖并破坏深复制和 Pickle。",
-        ("不要实现“不可变 `list` 子类”", "基类方法可以绕过", "深复制和 Pickle"),
+        "冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。",
+        ("内部使用 `tuple`", "不要实现“不可变 `list` 子类”", "基类方法可以绕过", "深复制和 Pickle"),
     ),
     "current-03-a": (
         "每个新增行为先写目标测试并观察它因功能缺失而失败，再写最小实现。",
@@ -254,8 +256,8 @@ CURRENT_CLAIM_CONTRACTS = {
         ("自动化评估可能遗漏的问题", "人工验证仍然是不可或缺的"),
     ),
 }
-FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS = {
-    "01": ("禁止排序映射键或数组元素", "同时排序所有映射键和所有数组元素"),
+CONTROLLED_EXCLUSIVITY_MARKERS = {
+    "01": ("禁止排序映射键或数组元素", "在规则 v0.9 中，配置哈希必须按映射键排序，但使用 UTF-16 编码，并允许 `NaN` 与无穷大参与序列化。"),
     "02": ("普通 `list` 是唯一允许的集合容器", "自定义不可变 `list` 子类是唯一允许的集合容器"),
     "03": ("实现完成后才允许编写测试", "测试必须在实现前写好"),
     "04": ("只允许原实现者完成一次合并自审", "必须先做代码质量审查，再做规格审查"),
@@ -271,18 +273,18 @@ FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS = {
     "11": ("完成全部框架与数学理论前禁止运行示例", "只允许复制并运行完整框架"),
     "12": ("唯一自动批准条件是两个模型结论一致", "唯一自动批准条件是复核置信度不低于 `0.8`"),
 }
-# 来源提交与冻结夹具重建之间暂时保留两份明确的文本契约。
-AUTHORED_CONTROLLED_EXCLUSIVITY_MARKERS = {
-    **FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS,
-    "01": (
-        "禁止排序映射键或数组元素",
-        "在规则 v0.9 中，配置哈希必须按映射键排序，但使用 UTF-16 编码，并允许 `NaN` 与无穷大参与序列化。",
-    ),
-}
 
 
 def read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def pre_human_inputs_by_case() -> dict[str, ReviewInput]:
+    return {
+        item.case.case_id: item
+        for path in (ROUND1_INPUTS_PATH, ROUND2_INPUTS_PATH)
+        for item in (ReviewInput.model_validate(row) for row in read_jsonl(path))
+    }
 
 
 def copy_fixture_workspace(tmp_path: Path) -> Path:
@@ -398,7 +400,10 @@ def test_manifest_fixes_eight_commit_pinned_normalized_sources(fixture_data) -> 
     )
     assert all(source.local_path.startswith("fixtures/sources/raw/") for source in manifest.sources)
     assert all(source.relative_path for source in manifest.sources)
-    assert all(source.fetched_at.isoformat() == "2026-09-24T00:00:00+08:00" for source in manifest.sources)
+    assert all(source.fetched_at.isoformat() == (
+        "2026-10-03T15:23:34.049831+08:00" if source.source_id == "controlled-benchmark-distractors"
+        else "2026-09-24T00:00:00+08:00"
+    ) for source in manifest.sources)
 
     documents_by_id = {document.source_id: document for document in documents}
     assert set(documents_by_id) == set(EXPECTED_SOURCE_HASHES)
@@ -693,7 +698,7 @@ def test_controlled_source_uses_neutral_ids_and_explicit_exclusive_propositions(
         for number in range(1, 13)
         for polarity in ("A", "B")
     ]
-    for first_marker, second_marker in AUTHORED_CONTROLLED_EXCLUSIVITY_MARKERS.values():
+    for first_marker, second_marker in CONTROLLED_EXCLUSIVITY_MARKERS.values():
         assert text.count(first_marker) == 1
         assert text.count(second_marker) == 1
 
@@ -705,7 +710,7 @@ def test_generated_controlled_claims_preserve_twelve_semantic_exclusivity_canari
     chunks_by_id = {chunk.chunk_id: chunk for chunk in chunks}
     claims_by_id = {claim.claim_id: claim for claim in claims}
 
-    for number, (first_marker, second_marker) in FROZEN_CONTROLLED_EXCLUSIVITY_MARKERS.items():
+    for number, (first_marker, second_marker) in CONTROLLED_EXCLUSIVITY_MARKERS.items():
         first_id = f"distractor-{number}-a"
         second_id = f"distractor-{number}-b"
         assert first_id in claims_by_id
@@ -970,7 +975,7 @@ def test_round2_reviewer_artifacts_are_archived_verbatim_and_bound() -> None:
         ROUND2_PROMPT_HASH
     )
 
-    current_lines = set(REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines())
+    baseline = pre_human_inputs_by_case()
     archived_lines = ROUND2_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
     archived_inputs = tuple(ReviewInput.model_validate_json(line) for line in archived_lines)
     archived_reviews = tuple(
@@ -980,7 +985,7 @@ def test_round2_reviewer_artifacts_are_archived_verbatim_and_bound() -> None:
     inputs_by_case = {item.case.case_id: item for item in archived_inputs}
 
     assert len(archived_inputs) == len(archived_reviews) == 8
-    assert set(archived_lines) <= current_lines
+    assert all(item == baseline[item.case.case_id] for item in archived_inputs)
     assert set(inputs_by_case) == REVISED_CASE_IDS
     assert {review.case_id for review in archived_reviews} == REVISED_CASE_IDS
     assert all(review.decision is ReviewDecision.APPROVE for review in archived_reviews)
@@ -1003,7 +1008,7 @@ def test_round2_reviewer_artifacts_are_archived_verbatim_and_bound() -> None:
         assert set(review.evidence_refs) <= environment_chunks
 
 
-def test_current_reviews_merge_round1_unchanged_and_round2_revised() -> None:
+def test_current_reviews_merge_three_rounds_by_target_hash_difference() -> None:
     current_lines = REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
     current = tuple(ReviewRecord.model_validate_json(line) for line in current_lines)
     round1 = {
@@ -1020,6 +1025,9 @@ def test_current_reviews_merge_round1_unchanged_and_round2_revised() -> None:
             for line in ROUND2_REVIEWS_PATH.read_text(encoding="utf-8").splitlines()
         )
     }
+    round3 = {item.case_id: item for item in (
+        ReviewRecord.model_validate(row) for row in read_jsonl(ROUND3_REVIEWS_PATH)
+    )}
     current_inputs = {
         item.case.case_id: item
         for item in (
@@ -1033,14 +1041,15 @@ def test_current_reviews_merge_round1_unchanged_and_round2_revised() -> None:
     assert all(line == canonical_json(json.loads(line)) for line in current_lines)
     assert {item.case_id for item in current} == set(current_inputs)
     for review in current:
-        expected = round2.get(review.case_id, round1[review.case_id])
+        expected = round3.get(review.case_id, round2.get(review.case_id, round1[review.case_id]))
         assert review == expected
         assert review.review_target_hash == current_inputs[review.case_id].review_target_hash
     assert all(review.decision is ReviewDecision.APPROVE for review in current)
     assert all(review.reviewer_confidence >= 0.8 for review in current)
     assert Counter(review.prompt_version for review in current) == {
-        ROUND1_PROMPT_VERSION: 40,
-        ROUND2_PROMPT_VERSION: 8,
+        ROUND1_PROMPT_VERSION: 30,
+        ROUND2_PROMPT_VERSION: 4,
+        "day2-benchmark-human-revision-rereview-v1": 14,
     }
 
 
@@ -1085,13 +1094,7 @@ def test_human_review_queue_contains_only_high_risk_pending_cases() -> None:
 
 def test_first_revision_changes_exactly_eight_review_targets(fixture_data) -> None:
     _, _, _, _, cases, _ = fixture_data
-    current_inputs = {
-        item.case.case_id: item
-        for item in (
-            ReviewInput.model_validate_json(line)
-            for line in REVIEW_INPUTS_PATH.read_text(encoding="utf-8").splitlines()
-        )
-    }
+    current_inputs = pre_human_inputs_by_case()
     archived_inputs = {
         item.case.case_id: item
         for item in (
@@ -1197,7 +1200,7 @@ def test_change_log_records_nonhuman_round1_revision(fixture_data) -> None:
         assert len(record.quality_audit_case_ids) == 1
 
 
-def test_rebuild_preserves_valid_human_revision_append_verbatim(
+def test_rebuild_rejects_unrelated_human_revision_append_without_rewriting_it(
     fixture_data, tmp_path: Path,
 ) -> None:
     del fixture_data
@@ -1212,11 +1215,11 @@ def test_rebuild_preserves_valid_human_revision_append_verbatim(
 
     result = run_builder(workspace)
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
     assert change_log_path.read_bytes() == expected
 
 
-def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
+def test_rebuild_rejects_concurrent_unrelated_change_log_appends_without_rewriting(
     fixture_data, tmp_path: Path,
 ) -> None:
     del fixture_data
@@ -1248,7 +1251,7 @@ def test_rebuild_preserves_concurrent_canonical_change_log_appends_verbatim(
     with change_log_path.open("ab") as stream:
         stream.write(concurrent)
     stdout, stderr = process.communicate(timeout=60)
-    assert process.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
+    assert process.returncode != 0, f"stdout={stdout}\nstderr={stderr}"
     assert change_log_path.read_bytes() == existing + concurrent
 
 
@@ -1646,7 +1649,7 @@ def test_rebuild_rejects_reviews_different_from_archived_merge_before_writes(
     assert queue_path.read_bytes() == queue_sentinel
 
 
-def test_empty_reviews_keep_pending_drafts_and_empty_human_queue(
+def test_empty_reviews_are_rejected_without_clearing_human_queue(
     tmp_path: Path,
 ) -> None:
     workspace = copy_fixture_workspace(tmp_path)
@@ -1654,21 +1657,15 @@ def test_empty_reviews_keep_pending_drafts_and_empty_human_queue(
     drafts_path = workspace_fixture_path(workspace, DRAFTS_PATH)
     queue_path = workspace_fixture_path(workspace, HUMAN_REVIEW_QUEUE_PATH)
     reviews_path.write_bytes(b"")
+    drafts_before = drafts_path.read_bytes()
+    queue_before = queue_path.read_bytes()
 
     result = run_builder(workspace)
 
-    assert result.returncode == 0, result.stderr
-    pending_cases = tuple(
-        BenchmarkCase.model_validate(row["case"])
-        for row in read_jsonl(drafts_path)
-    )
+    assert result.returncode != 0
     assert reviews_path.read_bytes() == b""
-    assert all(case.review_status is ReviewStatus.PENDING for case in pending_cases)
-    assert all(
-        case.human_review_status is HumanReviewStatus.NOT_REQUIRED
-        for case in pending_cases
-    )
-    assert queue_path.read_bytes() == b""
+    assert drafts_path.read_bytes() == drafts_before
+    assert queue_path.read_bytes() == queue_before
 
 
 def test_jsonl_is_canonical_and_reviewer_outputs_are_separated(fixture_data) -> None:

@@ -2,9 +2,9 @@
 
 ## 1. 范围与状态
 
-本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮 Reviewer 原样输出为 42 条 `approve`、6 条 `revise`；质量审计把实际修订范围扩为 base-02、base-08 共 8 条，第二轮对这 8 条全部 `approve`。当前 `reviews.jsonl` 由首轮未变化的 40 条与第二轮 8 条真实记录合并，最终 48 条模型复核均为 `approve`；24 条高风险类别进入 `human_review_queue.jsonl`，其中 12 条 `outdated`、12 条 `conflict`，仍待真实人工审核。终审清单含 24 张结构化卡片和 47 个去重证据块。`change_log.jsonl` 仍只有两组非人工修订；尚未生成 `human_reviews.jsonl`、正式 `runtime`、`labels` 或 `audit` 文件，也没有人工批准结论。
+本批数据是 `day2-draft-v0.1` 候选集，不是正式冻结集。它包含 8 份固定来源、316 个确定性 Markdown 块、48 条主张、48 条候选样本和 48 条独立 Reviewer 输入。首轮为 42 条 `approve`、6 条 `revise`，质量审计扩展修订范围至 8 条；第二轮对这 8 条全部通过。首次人工终审随后退回四条旧目标，引发 14 条目标哈希变化；第三轮对这 14 条全部通过。当前合并规则是变化项取第三轮，其余 34 条保留原轮次记录。24 条高风险候选仍需真实人工终审，其中 `outdated`、`conflict` 各 12 条。四条旧目标退回记录保存在人工历史，不能批准新目标；尚未生成 `human_reviews.jsonl`、正式冻结文件或人工批准结论。
 
-构建时间统一固定为 `2026-09-24T00:00:00+08:00`。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
+原批次时间固定为 `2026-09-24T00:00:00+08:00`；本次受控来源的获取时间为 `2026-10-03T15:23:34.049831+08:00`，合成规则有效期仍保留原实验设定。来源文本先规范化为 UTF-8、LF、无行尾空白且恰有一个终止换行，再写入仓库内 `fixtures/sources/raw/`。后续重建只读取这些 raw 副本，不访问网络或外部克隆。
 
 ## 2. 来源选择
 
@@ -13,7 +13,7 @@
 | `docs/实验合同.md` | `19e13d048cf0e6ba11695f4d6dd954cb8a364ebb` | 提供配置身份、基准真值和知识缺口指标定义。 |
 | `docs/AI_CODING_GUIDE.md` | `55e1c2f40356558c0cfafcb639830201000af20f` | 提供 TDD、双级审查、模块边界、数据隔离和人工门禁规则。 |
 | `docs/decisions.md` | `55e1c2f40356558c0cfafcb639830201000af20f` | 提供冻结容器采用 `tuple` 的决策与理由。 |
-| `fixtures/sources/controlled/benchmark-distractors.md` | `a866aee6b000331ba2fa0e4079b3c8b902e52e20` | 只提供可验证的过时与冲突控制变量，不代表真实工程建议。 |
+| `fixtures/sources/controlled/benchmark-distractors.md` | `71b29bacd9e77b051a7e7b12fce710386d473dd9` | 只提供可验证的过时与冲突控制变量，不代表真实工程建议；本次修正主题 01 的编码与非有限数值规则。 |
 | `Agent-Learning-Hub/README.md` | `dddf777dde6788228136862f270203424a28efbc` | 提供从可运行作品到评估、可观测性与安全的学习路线。 |
 | `hello-agents` 第 7 章 | `5caceca4e4c9a3d25cd14627881436953f4d6912` | 提供 Agent 框架消息契约与历史管理证据。 |
 | `hello-agents` 第 8 章 | `5caceca4e4c9a3d25cd14627881436953f4d6912` | 提供记忆分层、文档处理和 RAG 检索流程证据。 |
@@ -67,7 +67,7 @@
 
 | 主题 | 命题 A | 命题 B | 互斥理由 |
 | --- | --- | --- | --- |
-| 规范 JSON 哈希 | 唯一策略保留字典原始顺序且禁止排序。 | 唯一策略同时排序映射键和所有数组。 | 同一输入只能采用一种唯一序列化策略。 |
+| 规范 JSON 哈希 | 保留字典原始顺序且禁止排序。 | 要求映射键排序，但使用 UTF-16 并允许非有限数值。 | 两端在键排序上互斥；当前证据用排序裁决 A，用编码及非有限数值规则裁决 B。 |
 | 冻结容器 | 唯一容器是普通 `list`。 | 唯一容器是自定义不可变 `list` 子类。 | 两种规范都明确禁止另一种容器。 |
 | 测试驱动开发 | 实现完成后才允许编写测试。 | 测试必须在实现前写好。 | 测试相对实现的先后顺序相反。 |
 | 双级审查 | 只允许原实现者做一次合并自审。 | 必须由独立角色先质量审查再规格审查。 | 审查角色数量和阶段顺序不能同时成立。 |
@@ -137,6 +137,8 @@
 
 ### 7.2 第二轮复核与模型门禁
 
+本节保留第二轮完成时的合并规则；第三轮对实际变化目标的覆盖规则见第 7.5 节。
+
 第二轮只复核修订后的 8 条输入。输入原始行和 Reviewer 原输出分别归档为 `review_history/round-2-inputs.jsonl`、`round-2-reviews.jsonl`，SHA-256 为 `4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b716caea3`、`94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d`。提示词 `reviewer_revision_prompt_v1.md` 的原始字节 SHA-256 为 `6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f`；8 条记录均使用 `day2-benchmark-rereview-v1`，全部 `approve` 且置信度不低于 `0.8`。
 
 当前 `reviews.jsonl` 不是任意一组结构合法、目标哈希匹配的 ReviewRecord，而是唯一的归档合并：修订 8 条必须逐对象取第二轮原记录，其余 40 条必须逐对象取首轮原记录，再按 `case_id` 排序并写成规范 JSONL。构建器现场校验两份提示词原始字节哈希，从两轮归档加载记录并重建预期字节；非空 `reviews.jsonl` 只有与该预期逐字节一致时才进入 `apply_review_gate`。因此提示词身份、模型身份、复核时间、结论、置信度、环境内证据引用、顺序或 JSON 格式任一漂移都会在写盘前拒绝。若 reviews 为空，则草稿保持 `pending` 且人工队列为空。
@@ -164,6 +166,20 @@ uv run python scripts/render_stage_01_human_review_checklist.py --workspace-root
 
 渲染器只读取候选夹具，不读取或创建 `human_reviews.jsonl`。卡片中的人工字段保持为空；真实结论另行保存为 `HumanReviewRecord`。
 
+### 7.5 人工退回后的第三轮复核
+
+2026-10-03 开始按 [语义修订设计](superpowers/specs/2026-09-28-人工终审语义修订设计.md) 处理首批四张卡片。受控来源修订已固定在提交 `71b29bacd9e77b051a7e7b12fce710386d473dd9`；模型复核历史与人工意见历史分开保存。
+
+修订前基线由首轮 48 条输入加第二轮 8 条覆盖项还原。以基线和新输入的 `review_target_hash` 差集确定第三轮范围。普通样本也可能因共享证据受到影响，不能只按人审四个编号筛选。
+
+构建分为隔离准备与终结重建。准备模式输出第三轮输入，独立代理读正文作出真实结论；另一独立代理检查输出质量。只有所有变化目标通过且置信度不低于 `0.8`，才用第三轮原始记录覆盖旧记录、重新执行模型门禁并渲染清单。未通过的轮次原样保留，不把失败改写为通过。
+
+正式构建还要求当前 `reviews.jsonl` 存在且精确等于 48 条规范合并；缺失或为空时写盘前拒绝，不沿用第二轮历史中“空复核生成待审草稿”的兼容分支。此时如需准备新输入，应显式使用隔离准备模式。
+
+人工退回历史保存在 `human_review_history/round-1-reviews.jsonl`；`change_log.jsonl` 的旧 2,585 字节作为不可变前缀，后缀逐条记录全部实际变化目标的前后哈希。构建器不写这两类人工流程产物。新目标仍须经项目所有者终审。
+
+实际差集为 14 条：基础问题 01、02、12 各 4 条，基础问题 11 为 2 条；其余 34 条目标不变。第三轮 14 条均通过，最低置信度为 `0.94`，另经无历史独立代理检查正文与记录质量。首次输出时间戳含七位小数，原复核代理另行生成六位小数的规范副本，决策、理由、证据与置信度均未改变。首次原字节保存在 `round-3-reviews.raw.jsonl`，规范副本为 `round-3-reviews.jsonl`；两者摘要见[实验记录](experiments.md)。这只是数据质量复核，不是系统效果实验。
+
 ## 8. 重建与哈希
 
 首次从已核验的只读克隆写入 raw 副本：
@@ -180,7 +196,7 @@ uv run python -m pytest tests/benchmark/test_fixture_dataset.py -v
 Get-FileHash -Algorithm SHA256 fixtures/sources/manifest.json,fixtures/corpus/documents.jsonl,fixtures/corpus/chunks.jsonl,fixtures/corpus/claims.jsonl,fixtures/benchmark/drafts.jsonl,fixtures/benchmark/review_inputs.jsonl,fixtures/benchmark/reviews.jsonl,fixtures/benchmark/human_review_queue.jsonl,fixtures/benchmark/change_log.jsonl,fixtures/benchmark/review_history/round-1-inputs.jsonl,fixtures/benchmark/review_history/round-1-reviews.jsonl,fixtures/benchmark/review_history/round-2-inputs.jsonl,fixtures/benchmark/review_history/round-2-reviews.jsonl
 ```
 
-本次构建的文件哈希为：
+第二轮完成时的历史文件哈希如下；后续修订的最新实测哈希另行记录，不能用本表验证新目标：
 
 | 文件 | SHA-256 |
 | --- | --- |

@@ -1,6 +1,6 @@
 # 阶段一：评测契约、语料与候选基准
 
-本章对应学习材料提交前的已验证实现 `3f92ae5a2e6bae78bb54759fdacc18f81d8d5960`，预计阅读 30–45 分钟。当前产物是 48 条候选数据，不是正式基准：模型复核已覆盖 48 条并全部给出 `approve`，其中 12 条 `outdated` 和 12 条 `conflict` 仍是人工 `pending`。正式冻结尚未完成，也没有可报告的实验提升数字。
+本章起始实现基线为 `3f92ae5a2e6bae78bb54759fdacc18f81d8d5960`，并于 2026-10-03 同步人工退回后的第三轮复核流程，预计阅读 30–45 分钟。当前产物是 48 条候选数据，不是正式基准：模型复核已覆盖 48 条并全部给出 `approve`，其中 12 条 `outdated` 和 12 条 `conflict` 仍是人工 `pending`。正式冻结尚未完成，也没有可报告的实验提升数字。
 
 ## 真实失败案例
 
@@ -8,7 +8,9 @@
 
 这里有两个容易犯的错误。第一，把质量审计补充的 2 条写成 Reviewer 的原始结论，会篡改审计历史。第二，修订问题文本后继续沿用旧 `review_target_hash`，会让复核记录错误绑定到新内容。
 
-实际处理保留首轮输入和输出的原始字节，只修改 8 条候选问题，再对这 8 条执行第二轮独立复核。当前 `reviews.jsonl` 由首轮未变化的 40 条记录和第二轮 8 条记录唯一合并，不能把两轮元数据统一改写。最终 48 条模型复核均为 `approve`，但模型一致意见不等于人工批准；24 条高风险候选仍等待人工终审。
+实际处理保留首轮输入和输出的原始字节，只修改 8 条候选问题，再对这 8 条执行第二轮独立复核。当时由首轮未变化的 40 条和第二轮 8 条记录唯一合并，不能把两轮元数据统一改写。
+
+此后人工终审发现正文没有完整支持部分冲突关系，四条旧目标被退回。修订问题、主张和共享证据后，实际哈希差集为 14 条，全部重新经过第三轮独立复核；其余 34 条保留原记录。详见[四张卡片修订说明](../../docs/首批四张卡片修订说明.md)。当前 48 条模型复核均为 `approve`，但模型一致意见不等于人工批准；24 条高风险候选仍等待新目标上的人工终审。
 
 相关事实可在 [docs/decisions.md](../../docs/decisions.md)、[fixtures/benchmark/review_history](../../fixtures/benchmark/review_history) 和 [fixtures/benchmark/change_log.jsonl](../../fixtures/benchmark/change_log.jsonl) 中核对。
 
@@ -212,7 +214,7 @@ case 中的 `annotation_reason`、`review_status`、`human_review_status` 不进
 
 `ReviewInput` 自己会复算哈希；`apply_review_gate` 和冻结入口也会从当前可信语料重建目标，不能相信文件自报的哈希。旧记录即使 `case_id` 相同，只要目标内容变了也会被拒绝。
 
-两轮复核保持独立历史：未修改的 40 条保留首轮记录，修改的 8 条使用第二轮记录。`reviews.jsonl` 必须逐字节等于这项规范合并。当前 48 条决策都是模型 `approve`；`requires_human_review` 仍会把以下候选升级为人工处理：
+三轮复核保持独立历史：先以首轮和第二轮覆盖项形成旧基线，再用第三轮覆盖本次目标哈希变化的 14 条；其余 34 条保留原始记录。`reviews.jsonl` 必须逐字节等于这项规范合并。当前 48 条决策都是模型 `approve`；`requires_human_review` 仍会把以下候选升级为人工处理：
 
 - 类别为 `outdated` 或 `conflict`；
 - 模型决定为 `revise` 或 `reject`；
@@ -232,7 +234,7 @@ case 中的 `annotation_reason`、`review_status`、`human_review_status` 不进
 → 12 个基础问题 × 4 个环境
 → 确定性结构、引用、互斥、泄漏校验
 → Reviewer 可见输入和目标哈希
-→ 两轮独立复核的规范合并
+→ 按目标哈希差集重审并规范合并多轮原记录
 → apply_review_gate
 → 24 条 not_required + 24 条人工 pending
 ```
@@ -278,7 +280,7 @@ ReviewRecord 的 review_target_hash 已陈旧
 | 环境与白名单 | [src/knowledge_gap_agent/benchmark/validation.py](../../src/knowledge_gap_agent/benchmark/validation.py) 的 `validate_case`、`build_runtime_payload`、`build_model_input_payload` | [tests/benchmark/test_validation.py](../../tests/benchmark/test_validation.py) | 三池语义、标签字段、模型输入字段 |
 | 复核目标与门禁 | [src/knowledge_gap_agent/benchmark/review.py](../../src/knowledge_gap_agent/benchmark/review.py) 的 `build_review_input`、`apply_review_gate` | [tests/benchmark/test_review.py](../../tests/benchmark/test_review.py) | 可见字段、陈旧哈希、人工升级 |
 | 冻结 | [src/knowledge_gap_agent/benchmark/freeze.py](../../src/knowledge_gap_agent/benchmark/freeze.py) 的 `freeze_benchmark` | [tests/benchmark/test_freeze.py](../../tests/benchmark/test_freeze.py) | 三文件分离、人工门禁、整体哈希 |
-| 固定候选集 | [fixtures/benchmark/drafts.jsonl](../../fixtures/benchmark/drafts.jsonl) | [tests/benchmark/test_fixture_dataset.py](../../tests/benchmark/test_fixture_dataset.py) | 48 条分布、两轮合并、24 条人工队列 |
+| 固定候选集 | [fixtures/benchmark/drafts.jsonl](../../fixtures/benchmark/drafts.jsonl) | [tests/benchmark/test_fixture_dataset.py](../../tests/benchmark/test_fixture_dataset.py) | 48 条分布、三轮合并、24 条人工队列 |
 
 ## 取舍与下一阶段边界
 

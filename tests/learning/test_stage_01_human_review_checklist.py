@@ -471,15 +471,24 @@ def test_benchmark_construction_records_strict_semantics_and_review_artifacts() 
     assert "12 条 `conflict`" in text
 
 
-def test_pitfalls_only_record_two_reproduced_engineering_failures() -> None:
+def test_pitfalls_record_four_reproduced_failures_with_their_evidence() -> None:
     text = PITFALLS.read_text(encoding="utf-8")
-    issues = re.findall(r"(?m)^## (.+)$", text)
-
-    assert len(issues) == 2
-    assert any("夹具" in issue and "污染" in issue for issue in issues)
-    assert any("人工门禁" in issue and "绕过" in issue for issue in issues)
-    for subsection in ("复现条件", "影响", "根因", "回归测试", "禁止做法"):
-        assert text.count(f"### {subsection}") == 2
+    sections = re.split(r"(?m)^## (.+)\n", text)
+    issues = dict(zip(sections[1::2], sections[2::2], strict=True))
+    assert set(issues) == {
+        "复核文件缺失时静默清空队列",
+        "冲突图成立但正文没有形成冲突",
+        "破坏性测试污染版本化夹具",
+        "case 状态绕过正式人工门禁",
+    }
+    assert len(sections[1::2]) == 4
+    for title in ("破坏性测试污染版本化夹具", "case 状态绕过正式人工门禁"):
+        for subsection in ("复现条件", "影响", "根因", "回归测试", "禁止做法"):
+            assert len(re.findall(rf"(?m)^### {subsection}$", issues[title])) == 1
+    for term in ("reviews.jsonl", "误删或清空", "写盘前拒绝", "字节不变", "准备模式"):
+        assert term in issues["复核文件缺失时静默清空队列"]
+    for term in ("base-01", "数组排序", "base-02", "自然语言", "哈希差集", "人审"):
+        assert term in issues["冲突图成立但正文没有形成冲突"]
 
 
 def test_todo_keeps_day2_and_real_human_review_open() -> None:

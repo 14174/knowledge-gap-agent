@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
-import json
 from pathlib import Path
+import tempfile
 
 from knowledge_gap_agent.benchmark.models import (
+    HumanReviewDecision,
+    HumanReviewRecord,
     HumanRevisionRecord,
     KnowledgeEnvironment,
     compute_environment_hash,
@@ -17,7 +19,6 @@ from knowledge_gap_agent.benchmark.review import (
     ReviewDecision,
     ReviewInput,
     ReviewRecord,
-    ReviewRevisionRecord,
     apply_review_gate,
     build_review_input,
 )
@@ -38,7 +39,6 @@ from knowledge_gap_agent.utils.canonical import canonical_json, sha256_hex
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FETCHED_AT = datetime.fromisoformat("2026-09-24T00:00:00+08:00")
 OUTDATED_UNTIL = datetime.fromisoformat("2026-09-23T23:59:59+08:00")
-ROUND1_CHANGED_AT = datetime.fromisoformat("2026-09-24T20:34:00+08:00")
 ROUND1_INPUTS_HASH = "b5949208d2b4e0e976015c720d9e04de985e6678431f75bf760faa600b6517a8"
 ROUND1_REVIEWS_HASH = "7a112d7125d006f3050bbda1c0e941871c62a99999cb0e1c88fc28b5c1890147"
 ROUND1_PROMPT_VERSION = "day2-benchmark-review-v1"
@@ -47,17 +47,21 @@ ROUND2_INPUTS_HASH = "4351eebc1cdb6c2391c3c63c5c1e0ae981e1895f6f9f10d9fa17090b71
 ROUND2_REVIEWS_HASH = "94ae44ab604261c580d0705ac7615183810dfd38b782eca1b9aaa6b8759bf85d"
 ROUND2_PROMPT_VERSION = "day2-benchmark-rereview-v1"
 ROUND2_PROMPT_HASH = "6bd78ec097255e1334ff6829912025ace6060906b04bcaef775103d354baf95f"
-ROUND1_REVISED_BASES = frozenset({"base-02", "base-08"})
-ROUND1_REASONS = {
-    "base-02": (
-        "首轮 Reviewer 指出问题未明确要求解释自定义不可变 list 子类为何不足；"
-        "质量审计确认同一必要性缺陷也影响 local_sufficient，故收紧问题而保持证据与主张不变。"
-    ),
-    "base-08": (
-        "首轮 Reviewer 指出问题未明确要求异构文档统一转 Markdown 的理由与后续处理；"
-        "质量审计确认同一必要性缺陷也影响 local_sufficient，故收紧问题而保持证据与主张不变。"
-    ),
+ROUND3_PROMPT_VERSION = "day2-benchmark-human-revision-rereview-v1"
+ROUND3_PROMPT_HASH = "a04e118daa90003955c7e4b1354ea2878a664a0340b341b4c9144a4dbfe6bbb1"
+ROUND3_INPUTS_HASH = "7b54563bc191829928ede3e9354c3603b481e7ae9c795b162ef22f1e27df1ca2"
+ROUND3_REVIEWS_HASH = "2c73c77b9b29b6ce75d4364d41516abae946e24092e2d7875da97d21433128e0"
+ROUND3_RAW_REVIEWS_HASH = "dd96f45de9918d8e9e6d64faefe66a62c05f6987f158ecbcb12adf826f1801ac"
+HUMAN_REVIEWS_HASH = "6c55d48662d157f8bf51eb6c6d34da4203f4ee68025acf80d10218592e82bcc5"
+PRE_HUMAN_REVISION_CHANGE_LOG_LENGTH = 2585
+PRE_HUMAN_REVISION_CHANGE_LOG_SHA256 = "5a5c0ec55530ee97e1ccd440994388139a4b6c82e0270a4cc0edac90d46dfa02"
+HUMAN_REVIEW_TARGETS = {
+    "case-de9684be026811f1": "0a85af2ac41c07ba3b47e8459a0236164ad536e8b347b40f15815ea1150db221",
+    "case-528fb5963f28ff2c": "af2c2a42abaf841cb1e70f4fec3f205437af353dcef70498fdd5f2abd82417ea",
+    "case-264f4a2113be6ba0": "2ea2c0fa97fdab21a6ad562b5d34b28cb0944321aeffebc3e98c18a5cb170c15",
+    "case-7fd2c5ab217bd713": "979161ab765a11a02eb471b2b151b0fb0eb35e12842fe8c75d8639bf2dc08230",
 }
+ROUND1_REVISED_BASES = frozenset({"base-02", "base-08"})
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,7 @@ class SourceSpec:
     local_path: str
     expected_hash: str
     external_directory: str | None = None
+    fetched_at: datetime = FETCHED_AT
 
     @property
     def source_url(self) -> str:
@@ -127,13 +132,14 @@ SOURCES = (
         source_id="controlled-benchmark-distractors",
         title="受控基准干扰证据",
         repository="14174/knowledge-gap-agent",
-        commit_sha="a866aee6b000331ba2fa0e4079b3c8b902e52e20",
+        commit_sha="71b29bacd9e77b051a7e7b12fce710386d473dd9",
         relative_path="fixtures/sources/controlled/benchmark-distractors.md",
         local_path=(
             "fixtures/sources/raw/knowledge-gap-agent/fixtures/sources/controlled/"
             "benchmark-distractors.md"
         ),
-        expected_hash="b94b3c1acf993941667dfb37d0033d73c9ce4e59d467680f8eab5fbf97a7ea5d",
+        expected_hash="61661643db00fd11301c04905bd32ebf64b60f3c2e56078503c3c203a2c7717e",
+        fetched_at=datetime.fromisoformat("2026-10-03T15:23:34.049831+08:00"),
     ),
     SourceSpec(
         source_id="agent-learning-hub-readme",
@@ -191,7 +197,7 @@ TOPICS = (
     TopicSpec(
         1,
         "规范 JSON 哈希",
-        "如何稳定计算实验配置身份，并明确哪些配置变化必须改变身份哈希？",
+        "实验配置进入身份哈希前应如何规范化，哪些配置变化必须改变 config_hash？",
         ClaimSeed(
             "规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。",
             "project-ai-coding-guide",
@@ -216,7 +222,7 @@ TOPICS = (
             "集合字段在 Python 内部使用 `tuple`",
         ),
         ClaimSeed(
-            "冻结模型不应使用不可变 list 子类，因为基类方法可绕过覆盖并破坏深复制和 Pickle。",
+            "冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。",
             "project-ai-coding-guide",
             "不要实现“不可变 `list` 子类”",
         ),
@@ -431,7 +437,7 @@ def load_documents(
             repository=spec.repository,
             commit_sha=spec.commit_sha,
             relative_path=spec.relative_path,
-            fetched_at=FETCHED_AT,
+            fetched_at=spec.fetched_at,
             content_hash=actual_hash,
             local_path=spec.local_path,
         )
@@ -710,43 +716,38 @@ def _write_jsonl(path: Path, items: tuple[object, ...]) -> None:
 
 
 def _validate_change_log(
-    path: Path, revision_records: tuple[ReviewRevisionRecord, ...]
+    path: Path,
+    baseline_inputs_by_case: dict[str, ReviewInput],
+    current_inputs_by_case: dict[str, ReviewInput],
+    changed_case_ids: set[str],
 ) -> None:
-    prefix = _canonical_jsonl_bytes(
-        tuple(record.model_dump(mode="json") for record in revision_records)
-    )
-    if not path.is_file() or path.stat().st_size == 0:
-        raise ValueError(
-            "change_log.jsonl 是受版本控制的非空审计夹具，缺失或空文件均视为损坏"
-        )
-
-    existing = path.read_bytes()
-    if not existing.startswith(prefix):
-        raise ValueError("change_log.jsonl 固定 Reviewer 修订前缀缺失或已被篡改")
-    if not existing.endswith(b"\n"):
-        raise ValueError("change_log.jsonl 必须以换行结束")
-    suffix = existing[len(prefix):]
-    for line_number, raw_line in enumerate(suffix.split(b"\n")[:-1], start=3):
+    suffix = _validate_old_change_log_prefix(path)
+    records: list[HumanRevisionRecord] = []
+    for line_number, line in enumerate(suffix.splitlines(), start=3):
         try:
-            line = raw_line.decode("utf-8")
-            value = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(
-                f"change_log.jsonl 第 {line_number} 行不是有效 UTF-8 JSON"
-            ) from error
-        if not isinstance(value, dict):
-            raise ValueError(f"change_log.jsonl 第 {line_number} 行必须是 JSON 对象")
-        try:
-            record = HumanRevisionRecord.model_validate(value)
+            records.append(HumanRevisionRecord.model_validate_json(line))
         except ValueError as error:
             raise ValueError(
-                f"change_log.jsonl 第 {line_number} 行不是有效的人工修订记录"
+                f"change_log.jsonl 修订日志第 {line_number} 行不是有效人工修订记录"
             ) from error
-        canonical_record = canonical_json(record.model_dump(mode="json"))
-        if line != canonical_record:
-            raise ValueError(
-                f"change_log.jsonl 第 {line_number} 行不是规范人工修订记录"
-            )
+    if suffix != _canonical_jsonl_bytes(
+        tuple(record.model_dump(mode="json") for record in records)
+    ):
+        raise ValueError("change_log.jsonl 修订日志后缀必须使用规范 JSONL")
+    if (
+        len(records) != len(changed_case_ids)
+        or {r.case_id for r in records} != changed_case_ids
+    ):
+        raise ValueError("change_log.jsonl 修订日志后缀必须精确覆盖目标哈希差集且不得重复")
+    for record in records:
+        if (
+            record.actor != "codex-implementation-agent"
+            or record.before_review_target_hash
+            != baseline_inputs_by_case[record.case_id].review_target_hash
+            or record.after_review_target_hash
+            != current_inputs_by_case[record.case_id].review_target_hash
+        ):
+            raise ValueError(f"change_log.jsonl 修订日志角色或前后目标哈希不匹配：{record.case_id}")
 
 
 def _validate_round1_prompt(workspace_root: Path) -> str:
@@ -816,7 +817,6 @@ def _load_round1_review_history(
 
 def _validate_round2_review_history(
     workspace_root: Path,
-    current_inputs_by_case: dict[str, ReviewInput],
     expected_case_ids: set[str],
 ) -> tuple[tuple[ReviewInput, ...], tuple[ReviewRecord, ...]]:
     history_directory = workspace_root / "fixtures" / "benchmark" / "review_history"
@@ -856,10 +856,7 @@ def _validate_round2_review_history(
         raise ValueError("第二轮 Reviewer case_id 集合与修订范围不一致")
     for case_id in sorted(expected_case_ids):
         archived_input = inputs_by_case[case_id]
-        current_input = current_inputs_by_case[case_id]
         review = reviews_by_case[case_id]
-        if archived_input != current_input:
-            raise ValueError(f"第二轮 Reviewer 输入不是当前目标：{case_id}")
         if review.review_target_hash != archived_input.review_target_hash:
             raise ValueError(f"第二轮 Reviewer 结果未绑定归档输入：{case_id}")
         environment_chunk_ids = {
@@ -883,66 +880,18 @@ def _validate_round2_review_history(
     return archived_inputs, archived_reviews
 
 
-def build_revision_records(
-    cases: tuple[BenchmarkCase, ...],
-    archived_inputs: tuple[ReviewInput, ...],
-    archived_reviews: tuple[ReviewRecord, ...],
-    prompt_hash: str,
-) -> tuple[ReviewRevisionRecord, ...]:
-    inputs_by_case = {item.case.case_id: item for item in archived_inputs}
-    reviews_by_case = {item.case_id: item for item in archived_reviews}
-    records: list[ReviewRevisionRecord] = []
-    for base_question_id in sorted(ROUND1_REVISED_BASES):
-        family = tuple(case for case in cases if case.base_question_id == base_question_id)
-        if len(family) != 4:
-            raise ValueError(f"{base_question_id} 修订范围必须恰有 4 条候选")
-        family_ids = {case.case_id for case in family}
-        if not family_ids.issubset(inputs_by_case):
-            raise ValueError(f"{base_question_id} 有候选不在首轮 Reviewer 输入中")
-        reviewer_revise_ids = tuple(sorted(
-            case_id
-            for case_id in family_ids
-            if reviews_by_case[case_id].decision is ReviewDecision.REVISE
-        ))
-        quality_audit_ids = tuple(sorted(
-            case.case_id
-            for case in family
-            if case.category is CaseCategory.LOCAL_SUFFICIENT
-            and reviews_by_case[case.case_id].decision is ReviewDecision.APPROVE
-        ))
-        if len(reviewer_revise_ids) != 3 or len(quality_audit_ids) != 1:
-            raise ValueError(
-                f"{base_question_id} 应由 3 条原 revise 与 1 条质量审计补充候选组成"
-            )
-        before_questions = {
-            inputs_by_case[case_id].case.question for case_id in family_ids
-        }
-        after_questions = {case.question for case in family}
-        if len(before_questions) != 1 or len(after_questions) != 1:
-            raise ValueError(f"{base_question_id} 修订前后问题必须各自一致")
-        records.append(ReviewRevisionRecord(
-            base_question_id=base_question_id,
-            actor="independent_reviewer_and_quality_audit",
-            trigger="round_1_review_revision",
-            human_approved=False,
-            before_question=before_questions.pop(),
-            after_question=after_questions.pop(),
-            affected_case_ids=tuple(sorted(family_ids)),
-            reviewer_revise_case_ids=reviewer_revise_ids,
-            quality_audit_case_ids=quality_audit_ids,
-            reason=ROUND1_REASONS[base_question_id],
-            changed_at=ROUND1_CHANGED_AT,
-            round1_inputs_hash=ROUND1_INPUTS_HASH,
-            round1_reviews_hash=ROUND1_REVIEWS_HASH,
-            prompt_version=ROUND1_PROMPT_VERSION,
-            prompt_hash=prompt_hash,
-        ))
-    return tuple(records)
-
-
-def build(workspace_root: Path = REPOSITORY_ROOT) -> None:
-    workspace_root = workspace_root.resolve()
-    prompt_hash = _validate_round1_prompt(workspace_root)
+def _construct_current_dataset(
+    workspace_root: Path,
+) -> tuple[
+    SourceManifest,
+    tuple[SourceDocument, ...],
+    tuple[CorpusChunk, ...],
+    tuple[Claim, ...],
+    tuple[dict[str, object], ...],
+    tuple[BenchmarkCase, ...],
+    tuple[KnowledgeEnvironment, ...],
+    dict[str, ReviewInput],
+]:
     manifest, documents = load_documents(workspace_root)
     base_chunks = tuple(
         chunk for document in documents for chunk in chunk_markdown(document)
@@ -974,32 +923,277 @@ def build(workspace_root: Path = REPOSITORY_ROOT) -> None:
         )
         for case in cases
     )
-    review_inputs_by_case = {
-        item.case.case_id: item for item in review_inputs
+    review_inputs_by_case = {item.case.case_id: item for item in review_inputs}
+    return (
+        manifest,
+        documents,
+        chunks,
+        claims,
+        drafts,
+        cases,
+        environments,
+        review_inputs_by_case,
+    )
+
+
+def _compose_pre_human_revision_inputs(
+    round1_inputs: tuple[ReviewInput, ...],
+    round2_inputs: tuple[ReviewInput, ...],
+) -> dict[str, ReviewInput]:
+    baseline = {item.case.case_id: item for item in round1_inputs}
+    revised = {item.case.case_id: item for item in round2_inputs}
+    expected = {
+        item.case.case_id
+        for item in round1_inputs
+        if item.case.base_question_id in ROUND1_REVISED_BASES
     }
-    round2_case_ids = {
-        case.case_id
-        for case in cases
-        if case.base_question_id in ROUND1_REVISED_BASES
+    if len(round1_inputs) != 48 or len(baseline) != 48:
+        raise ValueError("首轮基线必须包含 48 个唯一目标")
+    if len(round2_inputs) != 8 or len(revised) != 8 or set(revised) != expected:
+        raise ValueError("第二轮覆盖集合必须精确等于旧修订范围")
+    baseline.update(revised)
+    return baseline
+
+
+def _changed_review_target_ids(
+    baseline_inputs_by_case: dict[str, ReviewInput],
+    current_inputs_by_case: dict[str, ReviewInput],
+) -> set[str]:
+    if set(baseline_inputs_by_case) != set(current_inputs_by_case):
+        raise ValueError("新旧目标 case_id 集合不一致")
+    changed = {
+        case_id
+        for case_id, item in current_inputs_by_case.items()
+        if item.review_target_hash
+        != baseline_inputs_by_case[case_id].review_target_hash
     }
+    if not changed:
+        raise ValueError("人工修订的目标哈希差集不能为空")
+    return changed
+
+
+def _load_human_review_history(
+    workspace_root: Path,
+    baseline_inputs_by_case: dict[str, ReviewInput],
+) -> tuple[HumanReviewRecord, ...]:
+    path = (
+        workspace_root / "fixtures/benchmark/human_review_history/round-1-reviews.jsonl"
+    )
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != HUMAN_REVIEWS_HASH:
+        raise ValueError("人工历史固定原始字节哈希不匹配")
+    records = tuple(
+        HumanReviewRecord.model_validate_json(line) for line in content.splitlines()
+    )
+    if len(records) != 4 or {r.case_id for r in records} != set(HUMAN_REVIEW_TARGETS):
+        raise ValueError("人工历史必须精确包含四条唯一旧目标")
+    if content != _canonical_jsonl_bytes(
+        tuple(r.model_dump(mode="json") for r in records)
+    ):
+        raise ValueError("人工历史必须使用规范 JSONL")
+    for record in records:
+        if (
+            record.actor != "project-owner"
+            or record.decision is not HumanReviewDecision.REVISE
+            or record.reviewed_at.utcoffset() != timedelta(hours=8)
+        ):
+            raise ValueError("人工历史的角色、结论或时区不匹配")
+        expected = HUMAN_REVIEW_TARGETS[record.case_id]
+        if (
+            record.review_target_hash != expected
+            or baseline_inputs_by_case[record.case_id].review_target_hash != expected
+        ):
+            raise ValueError("人工历史未绑定归档中的旧目标")
+    return records
+
+
+def _validate_old_change_log_prefix(path: Path) -> bytes:
+    if not path.is_file():
+        raise ValueError("change_log.jsonl 固定前缀缺失")
+    content = path.read_bytes()
+    prefix = content[:PRE_HUMAN_REVISION_CHANGE_LOG_LENGTH]
+    if hashlib.sha256(prefix).hexdigest() != PRE_HUMAN_REVISION_CHANGE_LOG_SHA256:
+        raise ValueError("change_log.jsonl 固定前缀哈希不匹配")
+    return content[PRE_HUMAN_REVISION_CHANGE_LOG_LENGTH:]
+
+
+def _load_pre_human_history(
+    workspace_root: Path,
+) -> tuple[dict[str, ReviewInput], tuple[ReviewRecord, ...], tuple[ReviewRecord, ...],]:
+    prompt_hash = _validate_round1_prompt(workspace_root)
     round1_inputs, round1_reviews = _load_round1_review_history(
         workspace_root, prompt_hash
     )
-    _, round2_reviews = _validate_round2_review_history(
-        workspace_root, review_inputs_by_case, round2_case_ids
-    )
-    revision_records = build_revision_records(
-        cases, round1_inputs, round1_reviews, prompt_hash
-    )
-    expected_reviews_by_case = {
-        review.case_id: review for review in round1_reviews
+    expected = {
+        item.case.case_id
+        for item in round1_inputs
+        if item.case.base_question_id in ROUND1_REVISED_BASES
     }
+    round2_inputs, round2_reviews = _validate_round2_review_history(
+        workspace_root, expected
+    )
+    baseline = _compose_pre_human_revision_inputs(round1_inputs, round2_inputs)
+    _load_human_review_history(workspace_root, baseline)
+    _validate_old_change_log_prefix(
+        workspace_root / "fixtures/benchmark/change_log.jsonl"
+    )
+    return baseline, round1_reviews, round2_reviews
+
+
+def prepare_round3_review_inputs(
+    workspace_root: Path,
+    output_path: Path,
+) -> tuple[ReviewInput, ...]:
+    workspace_root, output_path = workspace_root.resolve(), output_path.resolve()
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    output_parents = tuple(
+        parent
+        for parent in output_path.parents
+        if not output_path.is_relative_to(temporary_root)
+        or parent == temporary_root
+        or parent.is_relative_to(temporary_root)
+    )
+    if (
+        workspace_root == REPOSITORY_ROOT
+        or (workspace_root / ".git").exists()
+        or output_path.is_relative_to(REPOSITORY_ROOT)
+        or any((parent / ".git").exists() for parent in output_parents)
+        or output_path.is_relative_to(workspace_root / "fixtures")
+        or output_path.exists()
+    ):
+        raise ValueError("准备模式必须使用隔离工作区及尚不存在的非 fixtures 输出")
+    baseline, _, _ = _load_pre_human_history(workspace_root)
+    *_, current = _construct_current_dataset(workspace_root)
+    changed = _changed_review_target_ids(baseline, current)
+    inputs = tuple(current[case_id] for case_id in sorted(changed))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("xb") as stream:
+        stream.write(
+            _canonical_jsonl_bytes(
+                tuple(item.model_dump(mode="json") for item in inputs)
+            )
+        )
+    return inputs
+
+
+def _validate_round3_review_history(
+    workspace_root: Path,
+    current_inputs_by_case: dict[str, ReviewInput],
+    changed_case_ids: set[str],
+) -> tuple[tuple[ReviewInput, ...], tuple[ReviewRecord, ...]]:
+    benchmark = workspace_root / "fixtures/benchmark"
+    inputs_path = benchmark / "review_history/round-3-inputs.jsonl"
+    reviews_path = benchmark / "review_history/round-3-reviews.jsonl"
+    raw_reviews_path = benchmark / "review_history/round-3-reviews.raw.jsonl"
+    prompt_path = benchmark / "reviewer_human_revision_prompt_v1.md"
+    for path, expected_hash in (
+        (inputs_path, ROUND3_INPUTS_HASH),
+        (reviews_path, ROUND3_REVIEWS_HASH),
+        (raw_reviews_path, ROUND3_RAW_REVIEWS_HASH),
+        (prompt_path, ROUND3_PROMPT_HASH),
+    ):
+        if not path.is_file():
+            raise FileNotFoundError(f"缺少第三轮固定归档：{path.name}")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            raise ValueError(f"第三轮固定归档哈希不匹配：{path.name}")
+    inputs = tuple(
+        ReviewInput.model_validate_json(line)
+        for line in inputs_path.read_bytes().splitlines()
+    )
+    reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in reviews_path.read_bytes().splitlines()
+    )
+    canonical_reviews = _canonical_jsonl_bytes(
+        tuple(r.model_dump(mode="json") for r in reviews)
+    )
+    if reviews_path.read_bytes() != canonical_reviews:
+        raise ValueError("第三轮复核结果必须使用模型规范 JSONL 字节")
+    raw_reviews = tuple(
+        ReviewRecord.model_validate_json(line)
+        for line in raw_reviews_path.read_bytes().splitlines()
+    )
+    if raw_reviews != reviews:
+        raise ValueError("第三轮原始输出与规范副本存在非格式差异")
+    expected_inputs = tuple(current_inputs_by_case[k] for k in sorted(changed_case_ids))
+    if inputs != expected_inputs:
+        raise ValueError("第三轮输入必须精确等于当前目标哈希差集")
+    if inputs_path.read_bytes() != _canonical_jsonl_bytes(
+        tuple(item.model_dump(mode="json") for item in inputs)
+    ):
+        raise ValueError("第三轮输入必须使用规范 JSONL")
+    if (
+        len(reviews) != len(changed_case_ids)
+        or {r.case_id for r in reviews} != changed_case_ids
+    ):
+        raise ValueError("第三轮结果必须精确覆盖变化目标且不得重复")
+    for review in reviews:
+        current = current_inputs_by_case[review.case_id]
+        chunks = (
+            current.environment.visible_chunks
+            + current.environment.research_chunks
+            + current.environment.excluded_chunks
+        )
+        if review.review_target_hash != current.review_target_hash:
+            raise ValueError("第三轮结果未绑定当前目标")
+        if not set(review.evidence_refs).issubset({chunk.chunk_id for chunk in chunks}):
+            raise ValueError("第三轮证据引用超出环境")
+        if (
+            review.prompt_version != ROUND3_PROMPT_VERSION
+            or review.prompt_hash != ROUND3_PROMPT_HASH
+        ):
+            raise ValueError("第三轮提示词身份不匹配")
+        if (
+            review.decision is not ReviewDecision.APPROVE
+            or review.reviewer_confidence < 0.8
+        ):
+            raise ValueError("第三轮存在未通过或低置信度结果，必须保留原始归档并启动下一轮")
+    return inputs, reviews
+
+
+def build(workspace_root: Path = REPOSITORY_ROOT) -> None:
+    workspace_root = workspace_root.resolve()
+    baseline, round1_reviews, round2_reviews = _load_pre_human_history(workspace_root)
+    (
+        manifest,
+        documents,
+        chunks,
+        claims,
+        drafts,
+        cases,
+        environments,
+        review_inputs_by_case,
+    ) = _construct_current_dataset(workspace_root)
+    review_inputs = tuple(review_inputs_by_case.values())
+    environments_by_id = {
+        environment.environment_id: environment for environment in environments
+    }
+    changed = _changed_review_target_ids(baseline, review_inputs_by_case)
+    _validate_change_log(
+        workspace_root / "fixtures/benchmark/change_log.jsonl",
+        baseline,
+        review_inputs_by_case,
+        changed,
+    )
+    _, round3_reviews = _validate_round3_review_history(
+        workspace_root, review_inputs_by_case, changed
+    )
+    expected_reviews_by_case = {review.case_id: review for review in round1_reviews}
     expected_reviews_by_case.update(
         {review.case_id: review for review in round2_reviews}
     )
+    expected_reviews_by_case.update(
+        {review.case_id: review for review in round3_reviews}
+    )
     expected_case_ids = {case.case_id for case in cases}
     if set(expected_reviews_by_case) != expected_case_ids:
-        raise ValueError("两轮 Reviewer 归档无法唯一覆盖 48 条当前草稿")
+        raise ValueError("三轮 Reviewer 归档无法唯一覆盖 48 条当前草稿")
+    for case_id, review in expected_reviews_by_case.items():
+        if (
+            review.review_target_hash
+            != review_inputs_by_case[case_id].review_target_hash
+        ):
+            raise ValueError(f"三轮合并记录未绑定当前目标：{case_id}")
     expected_reviews = tuple(
         expected_reviews_by_case[case_id] for case_id in sorted(expected_case_ids)
     )
@@ -1007,52 +1201,44 @@ def build(workspace_root: Path = REPOSITORY_ROOT) -> None:
         tuple(review.model_dump(mode="json") for review in expected_reviews)
     )
     reviews_path = workspace_root / "fixtures" / "benchmark" / "reviews.jsonl"
-    reviews: tuple[ReviewRecord, ...] = ()
-    if reviews_path.is_file() and reviews_path.stat().st_size:
-        actual_review_bytes = reviews_path.read_bytes()
-        if actual_review_bytes != expected_review_bytes:
-            raise ValueError(
-                "reviews.jsonl 必须逐字段、按 case_id 顺序精确等于两轮归档的确定性合并"
-            )
-        reviews = expected_reviews
+    if not reviews_path.is_file() or not reviews_path.stat().st_size:
+        raise ValueError("reviews.jsonl 必须存在且非空，正式构建只接受完整归档合并")
+    if reviews_path.read_bytes() != expected_review_bytes:
+        raise ValueError("reviews.jsonl 必须逐字段、按 case_id 顺序精确等于三轮归档的确定性合并")
+    reviews = expected_reviews
 
-    queue_records: tuple[HumanReviewQueueRecord, ...] = ()
-    if reviews:
-        reviews_by_case = {review.case_id: review for review in reviews}
-        reviewed_cases = tuple(
-            apply_review_gate(
-                case,
-                environments_by_id[case.environment_id],
-                chunks,
-                claims,
-                reviews_by_case[case.case_id],
-            )
-            for case in cases
+    reviews_by_case = {review.case_id: review for review in reviews}
+    cases = tuple(
+        apply_review_gate(
+            case,
+            environments_by_id[case.environment_id],
+            chunks,
+            claims,
+            reviews_by_case[case.case_id],
         )
-        cases = reviewed_cases
-        drafts = tuple(
-            {
-                "case": case.model_dump(mode="json"),
-                "environment": environment.model_dump(mode="json"),
-            }
-            for case, environment in zip(cases, environments, strict=True)
+        for case in cases
+    )
+    drafts = tuple(
+        {
+            "case": case.model_dump(mode="json"),
+            "environment": environment.model_dump(mode="json"),
+        }
+        for case, environment in zip(cases, environments, strict=True)
+    )
+    queue_records = tuple(
+        HumanReviewQueueRecord(
+            case_id=case.case_id,
+            category=case.category,
+            review_target_hash=reviews_by_case[case.case_id].review_target_hash,
+            trigger="high_risk_category",
+            decision=reviews_by_case[case.case_id].decision,
+            reviewer_confidence=reviews_by_case[case.case_id].reviewer_confidence,
+            prompt_version=reviews_by_case[case.case_id].prompt_version,
         )
-        queue_records = tuple(
-            HumanReviewQueueRecord(
-                case_id=case.case_id,
-                category=case.category,
-                review_target_hash=reviews_by_case[case.case_id].review_target_hash,
-                trigger="high_risk_category",
-                decision=reviews_by_case[case.case_id].decision,
-                reviewer_confidence=reviews_by_case[case.case_id].reviewer_confidence,
-                prompt_version=reviews_by_case[case.case_id].prompt_version,
-            )
-            for case in sorted(cases, key=lambda item: item.case_id)
-            if case.human_review_status is HumanReviewStatus.PENDING
-        )
+        for case in sorted(cases, key=lambda item: item.case_id)
+        if case.human_review_status is HumanReviewStatus.PENDING
+    )
 
-    change_log_path = workspace_root / "fixtures" / "benchmark" / "change_log.jsonl"
-    _validate_change_log(change_log_path, revision_records)
     _write_json(
         workspace_root / "fixtures" / "sources" / "manifest.json",
         manifest.model_dump(mode="json"),
@@ -1092,7 +1278,10 @@ def parse_args() -> argparse.Namespace:
         default=REPOSITORY_ROOT,
         help="读取和写入 fixtures 的显式工作区根目录",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prepare-round3-output", type=Path,
+                      help="只导出变化目标到隔离文件，不写入当前夹具")
+    mode.add_argument(
         "--seed-source-root",
         type=Path,
         help="首次构建时，从包含两个固定只读克隆的目录写入规范化 raw 副本",
@@ -1103,6 +1292,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     workspace_root = args.workspace_root.resolve()
+    if args.prepare_round3_output is not None:
+        prepare_round3_review_inputs(workspace_root, args.prepare_round3_output)
+        return
     if args.seed_source_root is not None:
         seed_raw_sources(args.seed_source_root.resolve(), workspace_root)
     build(workspace_root)
