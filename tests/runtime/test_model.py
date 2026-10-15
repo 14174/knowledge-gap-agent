@@ -51,6 +51,7 @@ def test_real_http_request_and_usage(server, monkeypatch):
     path, request = state["requests"][0]
     assert path == "/v1/messages"
     assert request["max_tokens"] == 1800
+    assert request["thinking"] == {"type": "disabled"}
     assert request["model"] == "fixed" and request["temperature"] == 0
     assert client.last_attempts[0].raw == reply.raw
 

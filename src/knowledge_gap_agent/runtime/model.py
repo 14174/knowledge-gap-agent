@@ -53,7 +53,7 @@ class MessagesClient:
 
     def complete(self, system: str, payload: dict, *, max_tokens=1800) -> ModelReply:
         body = canonical_json({"model": self.config.model_name, "temperature": self.config.temperature,
-            "max_tokens": max_tokens, "system": system,
+            "max_tokens": max_tokens, "system": system, "thinking": {"type": "disabled"},
             "messages": [{"role": "user", "content": canonical_json(payload)}]}).encode("utf-8")
         attempts = []
         self.last_attempts = ()
