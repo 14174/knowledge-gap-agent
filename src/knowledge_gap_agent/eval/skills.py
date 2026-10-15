@@ -127,6 +127,10 @@ def evaluate_saved_skill(output):
                 missing.append(identity)
                 continue
             baseline, baseline_grade, candidate_run, candidate_grade = [read_json(path) for path in paths]
+            expected_key = [case_id, "e2", int(repeat_text)]
+            if (baseline["key"] != expected_key or baseline["phase"] != "main"
+                    or candidate_run["key"] != expected_key or candidate_run["phase"] != "skill"):
+                raise ValueError("技能配对运行身份与冻结清单不一致")
             validate_run(baseline, output)
             validate_run(candidate_run, output)
             validate_grade(baseline_grade, baseline)
@@ -141,7 +145,8 @@ def evaluate_saved_skill(output):
                      candidate_score=float(candidate_grade["success"]), baseline_cost=costs[0], candidate_cost=costs[1],
                      candidate_hash=candidate.content_hash)
             (target if split == "target" else regression).append(pair)
-    gate = evaluate_skill(candidate, tuple(target), tuple(regression), manifest=manifest)
+    gate = evaluate_skill(candidate, tuple(target), tuple(regression), manifest=manifest,
+                          manifest_path=output / "skill/evaluation_manifest.json")
     value = {"gate": gate.model_dump(mode="json"), "missing_pairs": missing,
              "target_pairs": [p.model_dump(mode="json") for p in target],
              "regression_pairs": [p.model_dump(mode="json") for p in regression],

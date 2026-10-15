@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import closing
 
 from .io import read_json, read_jsonl, write_once
 from .metrics import divide, paired_bootstrap, summarize
@@ -76,7 +77,7 @@ def build_report(output):
     attempts = None
     if ledger_path.exists():
         import sqlite3
-        with sqlite3.connect(ledger_path) as connection:
+        with closing(sqlite3.connect(ledger_path)) as connection:
             attempts = connection.execute("SELECT count(*) FROM attempts").fetchone()[0]
     # 所有已保存调用，包括中断后重跑的尝试；不把调用级未知用量算零。
     calls = [read_json(path) for path in output.rglob("call-*.json")]

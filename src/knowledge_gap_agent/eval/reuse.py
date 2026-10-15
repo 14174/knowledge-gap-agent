@@ -45,6 +45,11 @@ def run_reuse(dataset, config, output, client_factory, *, repeats=3, workers=4):
         main_path = output / "runs/main" / run_name(case_id, "e3", repeat) / "result.json"
         first = read_json(main_path) if main_path.exists() else execute_case(
             dataset, case_id, "e3", repeat, config, output, client_factory, phase="reuse_first")
+        expected_phase = "main" if main_path.exists() else "reuse_first"
+        if first["key"] != [case_id, "e3", repeat] or first["phase"] != expected_phase:
+            raise ValueError("第一轮运行身份与复用分组不一致")
+        from .integrity import validate_run
+        validate_run(first, output)
         added = set((first.get("writeback") or {}).get("added_ids", []))
         database = output / "runs" / first["phase"] / run_name(case_id, "e3", repeat) / "knowledge.sqlite"
         if not database.exists():

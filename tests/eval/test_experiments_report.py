@@ -27,6 +27,23 @@ def test_offline_report_keeps_registered_failure_denominator(tmp_path):
     assert "待真人终审" in (tmp_path / "report.md").read_text(encoding="utf-8")
 
 
+def test_offline_report_closes_budget_database(tmp_path, monkeypatch):
+    import sqlite3
+    from knowledge_gap_agent.eval.ledger import CallLedger
+
+    dataset = load_candidate_dataset(ROOT)
+    initialize_batch(dataset, tmp_path, make_config(), repeats=1)
+    CallLedger(tmp_path / "calls.sqlite", limit=2)
+    connection = sqlite3.connect(tmp_path / "calls.sqlite")
+    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
+    build_report(tmp_path)
+    try:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
 def test_reuse_manifest_has_eight_distinct_questions(tmp_path):
     dataset = load_candidate_dataset(ROOT)
     manifest = freeze_reuse_questions(dataset, tmp_path)

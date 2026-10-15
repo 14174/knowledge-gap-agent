@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from contextlib import closing, contextmanager
 from pathlib import Path
 import sqlite3
 
@@ -23,8 +24,11 @@ class CallLedger:
             elif row[0] != limit:
                 raise ValueError("恢复预算与原批次冲突")
 
+    @contextmanager
     def _connect(self):
-        return sqlite3.connect(self.path, timeout=30)
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            with connection:
+                yield connection
 
     @property
     def used(self):

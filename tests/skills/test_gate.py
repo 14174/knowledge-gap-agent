@@ -25,6 +25,25 @@ def test_validated_is_not_promoted(tmp_path):
     assert (tmp_path / "freeze.json").exists()
 
 
+@pytest.mark.parametrize("tamper", [False, True])
+def test_relocated_manifest_uses_actual_file_and_still_checks_content(tmp_path, tamper):
+    from knowledge_gap_agent.skills.gate import EvaluationManifest
+
+    c = candidate()
+    original = tmp_path / "freeze.json"
+    manifest = freeze_evaluation(c, ("target",), ("regression",), original)
+    manifest = EvaluationManifest.model_validate({**manifest.model_dump(),
+        "frozen_path": r"Z:\old-machine\freeze.json"})
+    original.write_text(manifest.model_dump_json(), encoding="utf-8")
+    relocated = tmp_path / "relocated.json"
+    original.rename(relocated)
+    if tamper:
+        relocated.write_text("{}", encoding="utf-8")
+    result = evaluate_skill(c, (pair(c),), (pair(c, "regression", "regression"),),
+                            manifest=manifest, manifest_path=relocated)
+    assert result.status == ("rejected" if tamper else "validated")
+
+
 @pytest.mark.parametrize("baseline,score", [(.9, .8), (.5, .4)])
 def test_rejects_regression(tmp_path, baseline, score):
     c = candidate()

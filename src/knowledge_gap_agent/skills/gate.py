@@ -96,16 +96,19 @@ class SkillGateResult(FrozenModel):
 
 def evaluate_skill(candidate: CandidateSkill, target_pairs: tuple[ScorePair, ...],
                    regression_pairs: tuple[ScorePair, ...], *, manifest: EvaluationManifest,
-                   max_regression: float = 0.0) -> SkillGateResult:
+                   max_regression: float = 0.0,
+                   manifest_path: str | Path | None = None) -> SkillGateResult:
     reasons = []
     try:
         candidate = CandidateSkill.model_validate(candidate.model_dump())
         manifest = EvaluationManifest.model_validate(manifest.model_dump())
+        actual_path = Path(manifest_path) if manifest_path is not None else Path(manifest.frozen_path)
         expected = _manifest(candidate, manifest.target_task_ids, manifest.regression_task_ids, max_regression,
-                             manifest.frozen_path)
-        if manifest != expected:
+                             actual_path)
+        # 原机器位置是审计元数据，不是候选与分集的内容身份。
+        if manifest.model_dump(exclude={"frozen_path"}) != expected.model_dump(exclude={"frozen_path"}):
             raise ValueError("候选或冻结清单不匹配")
-        disk = EvaluationManifest.model_validate_json(Path(manifest.frozen_path).read_text(encoding="utf-8"))
+        disk = EvaluationManifest.model_validate_json(actual_path.read_text(encoding="utf-8"))
         if disk != manifest:
             raise ValueError("磁盘冻结清单发生变化")
         groups = (tuple(ScorePair.model_validate(p.model_dump()) for p in target_pairs),

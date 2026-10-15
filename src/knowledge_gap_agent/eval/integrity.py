@@ -1,13 +1,21 @@
 """恢复、评分和报告共享的完整性校验；不充当数字签名。"""
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from knowledge_gap_agent.contracts.config import RunConfig
 from knowledge_gap_agent.runtime.models import RunResult
 from knowledge_gap_agent.utils.canonical import sha256_hex
 from .io import read_json
 from .dataset import verify_snapshot
+
+
+def _relative_artifact_path(value):
+    """兼容既有 Windows 记录，同时拒绝两种平台的绝对或越界路径。"""
+    relative = PurePosixPath(value.replace("\\", "/"))
+    if PureWindowsPath(value).drive or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("轨迹路径越界")
+    return Path(*relative.parts)
 
 
 def validate_protocol(output):
@@ -38,9 +46,7 @@ def validate_run(record, output):
         if sha256_hex(result.task.model_dump(mode="json")) != record["identity"]["task_hash"]:
             raise ValueError("运行输入摘要失配")
         # 轨迹存储自带规范JSON摘要；独立检查其内容绑定当前结果。
-        relative = Path(record["trace_path"])
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError("轨迹路径越界")
+        relative = _relative_artifact_path(record["trace_path"])
         envelope = json.loads((Path(output) / relative).read_text(encoding="utf-8"))
         if sha256_hex(envelope["result"]) != envelope["digest"] or envelope["result"] != record["result"]:
             raise ValueError("轨迹摘要或原始运行结果不一致")

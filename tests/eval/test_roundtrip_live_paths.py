@@ -2,12 +2,16 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from knowledge_gap_agent.eval.dataset import load_candidate_dataset
 from knowledge_gap_agent.eval.io import read_json
 from knowledge_gap_agent.eval.reuse import run_reuse
 from knowledge_gap_agent.eval.runner import execute_case, initialize_batch
 from knowledge_gap_agent.eval.runner import run_main, grade_phase
 from knowledge_gap_agent.eval.skills import run_skill, prepare_skill_state
+from knowledge_gap_agent.eval.skills import evaluate_saved_skill
+from knowledge_gap_agent.eval.io import write_once
 from knowledge_gap_agent.runtime.models import ModelReply
 from test_grading_runner import FixedClient, make_config
 
@@ -67,3 +71,27 @@ def test_candidate_is_distilled_from_development_then_runs_real_paired_gate(tmp_
     assert len(gate["target_pairs"]) == len(gate["regression_pairs"]) == 16
     manifest = read_json(tmp_path / "skill/evaluation_manifest.json")
     assert manifest["candidate_hash"] == gate["gate"]["candidate_hash"]
+
+
+def test_skill_report_rejects_baseline_files_misplaced_as_candidate(tmp_path):
+    from dataclasses import replace
+    from knowledge_gap_agent.eval.runner import run_name
+
+    dataset = load_candidate_dataset(ROOT)
+    dataset = replace(dataset, cases=(dataset.development_cases[0],
+        next(case for case in dataset.evaluation_cases if case.topic == 5),
+        next(case for case in dataset.evaluation_cases if case.topic == 9)))
+    config = make_config()
+    initialize_batch(dataset, tmp_path, config, repeats=1)
+    run_main(dataset, config, tmp_path, RoundTripClient, repeats=1, development=True)
+    prepare_skill_state(dataset, config, tmp_path, RoundTripClient, repeats=1)
+    for case in dataset.evaluation_cases:
+        execute_case(dataset, case.case_id, "e2", 1, config, tmp_path, RoundTripClient)
+    grade_phase(dataset, config, tmp_path, RoundTripClient)
+    for case in dataset.evaluation_cases:
+        name = run_name(case.case_id, "e2", 1)
+        for filename in ("result.json", "grade.json"):
+            source = tmp_path / "runs/main" / name / filename
+            write_once(tmp_path / "runs/skill" / name / filename, read_json(source))
+    with pytest.raises(ValueError, match="技能.*身份"):
+        evaluate_saved_skill(tmp_path)

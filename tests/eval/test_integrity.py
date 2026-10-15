@@ -12,6 +12,12 @@ from test_grading_runner import FixedClient, make_config
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_git_keeps_fixture_and_experiment_bytes_unchanged():
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "fixtures/** -text" in attributes
+    assert "artifacts/** -text" in attributes
+
+
 def test_snapshot_byte_change_is_rejected(tmp_path):
     dataset = load_candidate_dataset(ROOT)
     initialize_batch(dataset, tmp_path, make_config(), repeats=1)
@@ -62,3 +68,46 @@ def test_reuse_report_rejects_run_bound_to_other_case(tmp_path):
             "identity": {"key": ["other", "e2", 1], "phase": arm}, "search_calls": 1})
     with pytest.raises(ValueError, match="复用.*身份"):
         _reuse_report(tmp_path, {"repeats": 1})
+
+
+def test_reuse_rejects_misplaced_first_round_before_second_round_calls(tmp_path, monkeypatch):
+    import knowledge_gap_agent.eval.reuse as reuse
+    from knowledge_gap_agent.eval.runner import run_name
+    from knowledge_gap_agent.eval.skills import prepare_skill_state
+    from knowledge_gap_agent.knowledge.store import SQLiteKnowledgeProvider
+
+    dataset = load_candidate_dataset(ROOT)
+    config = make_config()
+    initialize_batch(dataset, tmp_path, config, repeats=1)
+    prepare_skill_state(dataset, config, tmp_path, lambda _: None, repeats=1)
+    case = next(case for case in dataset.evaluation_cases
+                if case.case.category.value == "local_partial")
+    directory = tmp_path / "runs/main" / run_name(case.case_id, "e3", 1)
+    write_once(directory / "result.json", {
+        "key": ["wrong-case", "e3", 1], "phase": "main",
+        "writeback": None, "knowledge_entries": [], "error_type": None})
+    with SQLiteKnowledgeProvider(directory / "knowledge.sqlite"):
+        pass
+
+    def forbidden_second_round(*args, **kwargs):
+        raise AssertionError("第一轮身份错误时不得调用第二轮")
+
+    monkeypatch.setattr(reuse, "execute_case", forbidden_second_round)
+    with pytest.raises(ValueError, match="第一轮.*身份"):
+        reuse.run_reuse(dataset, config, tmp_path, lambda _: None, repeats=1, workers=1)
+
+
+def test_saved_windows_trace_path_has_portable_relative_representation():
+    from knowledge_gap_agent.eval.integrity import _relative_artifact_path
+
+    relative = _relative_artifact_path(r"runs\main\case\trace\run.json")
+    assert relative.as_posix() == "runs/main/case/trace/run.json"
+
+
+@pytest.mark.parametrize("path", ("../outside.json", r"..\outside.json",
+                                  r"C:\outside.json", r"C:outside.json", "/outside.json"))
+def test_saved_trace_path_rejects_cross_platform_escape(path):
+    from knowledge_gap_agent.eval.integrity import _relative_artifact_path
+
+    with pytest.raises(ValueError, match="路径越界"):
+        _relative_artifact_path(path)

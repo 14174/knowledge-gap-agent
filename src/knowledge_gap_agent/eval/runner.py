@@ -166,7 +166,7 @@ def execute_case(dataset, case_id, variant, repeat, base_config, output, client_
     if result:
         from knowledge_gap_agent.tracing.store import save_run
         trace_path = save_run(result, directory / "trace")
-        record["trace_path"] = str(trace_path.relative_to(output))
+        record["trace_path"] = trace_path.relative_to(output).as_posix()
     write_once(result_path, record)
     return record
 

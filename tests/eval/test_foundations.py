@@ -38,6 +38,30 @@ def test_budget_persists_attempts_and_resume(tmp_path):
     assert ledger.used == 2
 
 
+def test_budget_closes_each_connection_after_transaction(tmp_path, monkeypatch):
+    import sqlite3
+
+    connect = sqlite3.connect
+    connections = []
+
+    def tracked(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracked)
+    ledger = CallLedger(tmp_path / "closed.sqlite", limit=2)
+    ledger.reserve()
+    assert ledger.used == 1
+    try:
+        for connection in connections:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+    finally:
+        for connection in connections:
+            connection.close()
+
+
 def test_budget_atomic_under_parallel_workers(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     ledger = CallLedger(tmp_path / "concurrent.sqlite", limit=9)
