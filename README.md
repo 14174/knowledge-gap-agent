@@ -1,121 +1,73 @@
-# Knowledge-Gap-Aware Self-Evolving Agent Harness
+# 知识缺口驱动的智能体执行框架
 
-面向知识密集型长程任务的轻量级 Agent Harness。项目关注两个问题：Agent 如何识别自己“不知道什么”，以及如何把经过验证的执行经验转化为可复用 Skill。
+面向固定知识任务的轻量级研究原型：判断本地证据是否够用，必要时研究，验证后写回，并用隔离评测检验机制。实现使用 Python、Pydantic、SQLite 和确定性 BM25，不依赖智能体框架。
 
-当前仓库处于设计与基线准备阶段。文档中的指标均为待测项；在完成可复现实验前，不声明性能提升。
+运行时、轨迹重放、知识闭环、候选技能门禁及隔离评测均已实现；384次主运行、48次复用运行、96次候选运行与评分已完成。主批次2085次请求尝试，全部归档。二十四条高风险候选仍待真人终审，不冒充正式数据冻结或生产效果。
 
-## 核心闭环
+实测 E2 成功83/96，充分性F1为0.873；但相对有知识对照没有减少搜索，质量差区间跨零；写回未证明缺失知识复用，退化技能被拒绝。详见[总报告](docs/首轮实验总报告.md)、[最终交付清单](docs/最终交付清单.md)和[简历证据卡](docs/简历证据卡.md)，不把负结果包装成成本收益。
 
-### Knowledge Evolution
+## 从哪里开始
 
-```text
-Knowledge Retrieval
-        ↓
-Knowledge Sufficiency
-   ├─ sufficient ──────────────→ Answer
-   └─ partial / missing
-              ↓
-         Web Research
-              ↓
-      Evidence Verification
-              ↓
-     Knowledge Consolidation
-              ↓
-          LLM Wiki
-              ↓
-         Future Reuse
+- 学习：[五阶段课程](learning/README.md)，每阶段指南、实验、八道练习及评分点答案。
+- 开发：[协作规则](AGENTS.md)、[工程规范](docs/AI_CODING_GUIDE.md)、[架构](docs/architecture.md)、[模块索引](docs/module_index.md)。
+- 执行：[连续交付索引](docs/superpowers/plans/2026-10-15-全项目交付索引.md)、[实验设计](docs/superpowers/specs/2026-10-15-真实实验与统计设计.md)、[中间报告](docs/reports/)。
+- 数据：[基准构造依据与过程](docs/benchmark-construction.md)、[真人终审清单](docs/阶段一人工终审清单.md)。
+
+## 安装与离线演示
+
+```powershell
+uv sync --extra dev
+$env:PYTHONUTF8='1'
+uv run python -m pytest -q
+uv run python demo/01_config_trace.py
+uv run python demo/02_bm25_retrieval.py
+uv run python demo/03_react_loop.py
+uv run python demo/04_trace_replay.py
+uv run python demo/05_knowledge_provider.py
+uv run python demo/06_sufficiency_gate.py
+uv run python demo/07_evidence_gate.py
+uv run python demo/08_round_trip_reuse.py
+uv run python demo/09_candidate_skill_gate.py
+uv run python demo/10_reproduce_report.py
 ```
 
-系统先检索本地长期知识，再判断信息是否完整、时效是否满足任务要求。只有在知识不足、过时或冲突时才触发定向 Web Research。外部证据通过来源、时效、交叉验证和冲突检查后，才允许进入长期 Knowledge Memory。
+十个演示默认离线；固定响应和配对只验证工程行为，不产生真实效果指标。第十个演示未提供真实目录时只展示使用说明。全量验收记录见实验报告，不把测试数量当模型能力。
 
-### Skill Evolution
-
-```text
-Execution Trace
-      ↓
-Evaluation
-      ↓
-Experience Distillation
-      ↓
-Candidate Skill
-      ↓
-Evaluation / Regression Gate
-   ├─ pass ─→ Promotion ─→ Skill Store ─→ Future Runtime
-   └─ fail ─→ Reject / Revise
-```
-
-Skill Evolution 不等于让 Agent 自动改 Prompt。系统从执行 Trace 和 Eval Feedback 中提炼候选经验，但 Candidate Skill 必须通过任务评测与回归检查后才能进入运行时。每个 Skill 保留版本、来源 Trace、适用条件、评测记录和回退信息。
-
-## 设计边界
-
-- Harness 自研部分：Agent Loop、结构化 State、Context Manager、Knowledge Sufficiency、Trace/Replay、Evaluation 与 Skill Gate。
-- 复用基础设施：模型 API、MCP 协议、Web Search、数据库驱动与 LLM Wiki。
-- LLM Wiki 作为可替换的长期知识后端，通过 `KnowledgeProvider` 接口接入，不与 Runtime 强耦合。
-- 第一版建立 Single-Agent ReAct 基线。Adaptive Planning、Multi-Agent 与 Skill Promotion 都通过消融实验决定是否保留。
-- 不把未验证的设计写成效果结论，不把目标指标写成实验结果。
-
-## 计划模块
+## 闭环与职责
 
 ```text
-runtime/       Agent Loop、State、Session、生命周期与恢复
-context/       Context 选择、Token Budget 与 Compaction
-planner/       复杂度路由、Plan-Execute 与 Replan
-tools/         Tool Registry、执行、校验、重试与 MCP Adapter
-knowledge/     检索、Sufficiency、证据验证与知识沉淀
-skills/        Experience 提炼、Candidate、版本与 Promotion
-tracing/       事件、Trace、Replay 与审计
-eval/          Benchmark、Evaluator、回归门禁与指标
-agents/        Researcher，以及后续待验证的 Reviewer/Reporter
+问题与可见证据 → 充分性判断 → 足够：限定作答
+                          → 不足：研究 → 回答 → 提取 → 独立验证 → SQLite写回
+后续不同问题 → 检索新增知识 → 判断与作答 → 检查是否实际引用
+
+开发轨迹 → 冻结候选与目标/回归分集 → 同题配对评测 → 离线通过或拒绝
+完成的运行 → 独立读取评分标签 → 按主题配对统计 → 离线重算报告
 ```
 
-## 评测方向
+运行模型不接收答案、类别、必需主张或缺口标签。研究工具仅检索固定环境的可见池与研究池，排除池不可访问。模型请求是真实远端请求，研究材料是固定语料，不声称开放网页搜索。
 
-项目从第一天记录 Outcome、Trajectory、Tool Use、Knowledge/Skill Reuse 和 Cost，而不是只评最终答案。
+写回必须通过结构检查与单独模型语义验证，保存正文、完整来源关系及凭据。技能即使通过仍不自动进入默认策略。离线重放重新执行状态机，不重新请求模型，也不等于远端再次生成可重复。
 
-| 类别 | 计划指标 | 当前值 |
-|---|---|---:|
-| Outcome | Task Success、Correctness、Completeness、Citation Correctness | TBD |
-| Knowledge Decision | Sufficiency Precision / Recall / F1 | TBD |
-| Knowledge Evolution | Knowledge Reuse Rate、Repeated Search Reduction、Update Accuracy | TBD |
-| Skill Evolution | Skill Hit Rate、Skill Gain、Promotion Rate、Regression Rate | TBD |
-| Trajectory | Tool Selection Accuracy、Recovery Rate、Repeated Action Rate、Steps | TBD |
-| Efficiency | Tokens、Search Calls、Tool Calls、Latency、Cost | TBD |
+## 真实实验与复现
 
-计划中的核心消融包括：
+仅显式联网命令请求现有兼容消息服务。预先配置环境变量 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`；不要把密钥写入仓库。
 
-- ReAct 与 Adaptive Planning；
-- Full History、Sliding Window、Retrieval Context 与 Retrieval + Compaction；
-- 无长期知识、普通 RAG 与 LLM Wiki；
-- 无 Sufficiency Gate 与 Knowledge-Gap-Aware Research；
-- 无 Skill、Candidate Skill 与通过 Gate 的 Active Skill；
-- Single-Agent 与不同 Multi-Agent 编排。
+```powershell
+uv run python scripts/run_experiments.py --live --phase all --model deepseek-v4-flash --model-revision provider-reported-unpinned --repeats 3 --workers 4 --budget 2400 --output artifacts/experiments/my-new-batch
+uv run python scripts/report_experiments.py --input artifacts/experiments/my-new-batch --output artifacts/reports/my-report
+uv run python demo/10_reproduce_report.py --input artifacts/experiments/my-new-batch
+```
 
-所有实验固定模型、提示词、工具、数据集和采样参数。结果表在实验完成前统一保留为 `TBD` 或 `XX`。
+同目录恢复只允许相同配置、代码与数据摘要；重新设计使用新批次。每次 HTTP 尝试提前计入持久预算，失败不退还，未知用量不按零计算。服务模型别名不能保证固定权重；记录实际返回模型，不编造可验证版本或金额。
 
-## 里程碑
+当前协议使用十二主题、每题四环境共四十八条候选；开发主题01–04，留出主题05–12。每变体三次，共三百八十四次主运行；复用和技能另行配对。重复调用不是独立主题扩容，区间按八个主题成簇计算。失败保留主分母，缺评分单列，裁判成本与运行成本分开。
 
-1. 定义 Benchmark、Trace Schema 与最小可复现配置。
-2. 实现 Single-Agent ReAct Baseline，获得首组基线数据。
-3. 接入 LLM Wiki，完成 Knowledge Memory 消融。
-4. 实现 Knowledge Sufficiency、Web Research 和 Evidence Verification 闭环。
-5. 实现 Context Manager 与 Adaptive Planning，并分别评测。
-6. 从 Trace 中生成 Candidate Skill，建立 Evaluation / Regression Gate。
-7. 验证 Skill Promotion、版本回退和长期收益。
-8. 最后评估 Multi-Agent 与跨模型泛化；若收益不足则不进入默认架构。
+## 实现边界
 
-完整模块设计、数据流、指标定义和实验矩阵见 [项目计划](docs/PROJECT_PLAN.md)。
+本轮完成最小动作循环、错误终止、完整轨迹与重放、SQLite/BM25、充分性、验证写回、候选门禁、真实对照及课程。未实现逐步检查点恢复、上下文压缩、自适应规划、多智能体编排、特定知识产品适配、自动晋升或回退；未验证跨模型、开放网页和生产泛化。
 
-使用 Codex 或其他 AI Coding 工具参与开发前，请先阅读 [Codex 协作规则](AGENTS.md) 和 [AI Coding 工程规范](docs/AI_CODING_GUIDE.md)。二者规定了模块边界、测试驱动流程、数据门禁和交接格式。
-
-## 项目状态
-
-- 需求与总体架构：已确定
-- GitHub 仓库与文档：建设中
-- Runtime 实现：TBD
-- Benchmark 与基线实验：TBD
-- Knowledge Evolution 实验：TBD
-- Skill Evolution 实验：TBD
+[长期项目计划](docs/PROJECT_PLAN.md)、[长期实验路线](docs/EXPERIMENT_PLAN.md)和[原面试问题库](docs/RESUME_AND_INTERVIEW.md)保留历史设想，不能当作当前功能清单。当前分支 `codex/full-project-delivery` 供最终审阅；正式冻结与课程标签等待真实人工审核。
 
 ## 许可证
 
-TBD
+尚未选择项目许可证；外部教程来源与固定提交见来源清单，不推定其内容授权可由本仓库重新授予。

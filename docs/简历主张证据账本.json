@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "claims": [
+    {
+      "id": "claim-project-engineering-001",
+      "source_fact": "已实现运行时、SQLite/BM25、充分性、验证写回、候选门禁及隔离评测；真实主运行384次，动作循环轨迹全部离线重放通过。",
+      "candidate_wording": "【待确认个人掌握与职责】在AI辅助下构建可审计知识研究智能体，完成384次主对照运行及384条动作循环离线重放，并交付五阶段课程。",
+      "sources": [{"type": "repository", "location": "docs/最终交付清单.md", "public_status": "公开范围为交付分支"}, {"type": "artifact", "location": "artifacts/verification/2026-10-15-main-integrity.json", "public_status": "公开范围为交付分支"}],
+      "responsibility_level": "参与",
+      "verification_status": "待确认",
+      "allowed_uses": ["内部简历草稿", "项目学习与面试准备"],
+      "interview_details": ["运行模型不读取标签", "完整动作循环重放与远端再采样的区别", "多来源凭据绑定与稳定知识身份"],
+      "boundary": "用户提出目标、参与需求和前期学习；代理完成大量设计、实现及审查，不能写成本人独立手写全部代码。",
+      "risk_notes": ["用户尚未统一阅读与复现后续阶段", "正式数据终审和课程标签未完成"],
+      "last_verified": "2026-10-15"
+    },
+    {
+      "id": "claim-project-metrics-002",
+      "source_fact": "八主题留出、32条候选环境、每变体3重复；E2端到端83/96成功，研究决策F1为0.872727；相对E1未减少搜索，成功率差区间跨零。",
+      "candidate_wording": "【待用户终审】在固定候选集上完成四变体评测，端到端通过率86.46%，研究决策F1为0.873，并以配对统计识别未达成的效率假设。",
+      "sources": [{"type": "artifact", "location": "artifacts/reports/2026-10-15-final/report.json", "public_status": "公开范围为交付分支"}, {"type": "report", "location": "docs/知识充分性实验.md", "public_status": "公开范围为交付分支"}],
+      "responsibility_level": "参与",
+      "verification_status": "待确认",
+      "allowed_uses": ["带候选状态的内部草稿"],
+      "interview_details": ["TP72、FP21、TN3、FN0的计算", "为什么按8主题聚类而非96条独立样本", "为什么不把+2.08个百分点称为稳定提升"],
+      "boundary": "数字属于候选数据、单模型和固定语料；不代表生产、跨模型或个人独立完成的效果。",
+      "risk_notes": ["24条高风险候选仍待真人终审", "问题、标签或正文变化后需重跑", "不得写成降低费用或显著提升"],
+      "last_verified": "2026-10-15"
+    },
+    {
+      "id": "claim-project-benefit-rejected-003",
+      "source_fact": "门禁与写回均未减少搜索，新增条目引用未证明缺失知识被学习；候选目标得分下降且出现单题回归，被拒绝。",
+      "candidate_wording": "不采用：成本下降、显著提效、自动进化成功或新知识复用率16.67%。",
+      "sources": [{"type": "report", "location": "docs/首轮实验总报告.md", "public_status": "公开范围为交付分支"}],
+      "responsibility_level": "参与",
+      "verification_status": "不采用",
+      "allowed_uses": ["内部风险审计"],
+      "interview_details": ["新增编号与信息增量的区别", "回归均分变好仍有一题下降", "候选适用范围与目标任务不匹配"],
+      "boundary": "不以工程完成代替效果证明；失败结果保留。",
+      "risk_notes": ["不得用于对外正向收益主张"],
+      "last_verified": "2026-10-15"
+    }
+  ]
+}

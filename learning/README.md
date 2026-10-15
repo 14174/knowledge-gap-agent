@@ -8,9 +8,16 @@
   - [实验](stage-01-eval-contract/LAB.md)
   - [练习](stage-01-eval-contract/EXERCISES.md)
   - [参考答案与评分点](stage-01-eval-contract/SOLUTIONS.md)
-- 阶段二至五：随对应实现完成后补齐，不从未来设计反推虚构结果。
+- 阶段二：[运行时与轨迹重放](stage-02-runtime/GUIDE.md)：[实验](stage-02-runtime/LAB.md)、[练习](stage-02-runtime/EXERCISES.md)、[答案](stage-02-runtime/SOLUTIONS.md)。
+- 阶段三：[知识检索与充分性](stage-03-knowledge-gap/GUIDE.md)：[实验](stage-03-knowledge-gap/LAB.md)、[练习](stage-03-knowledge-gap/EXERCISES.md)、[答案](stage-03-knowledge-gap/SOLUTIONS.md)。
+- 阶段四：[证据写回与知识复用](stage-04-knowledge-evolution/GUIDE.md)：[实验](stage-04-knowledge-evolution/LAB.md)、[练习](stage-04-knowledge-evolution/EXERCISES.md)、[答案](stage-04-knowledge-evolution/SOLUTIONS.md)。
+- 阶段五：[候选技能、统计与证据](stage-05-skill-gate/GUIDE.md)：[实验](stage-05-skill-gate/LAB.md)、[练习](stage-05-skill-gate/EXERCISES.md)、[答案](stage-05-skill-gate/SOLUTIONS.md)。
 
 阶段一从两个本地 Demo 开始，覆盖稳定哈希、Markdown 行级切块、BM25 手算、知识环境、标签泄漏、独立复核和人工升级。当前材料基于候选数据；人工终审和正式冻结尚未完成。
+
+后续阶段引用实际实现，演示中的固定响应只用于学习控制流。实验效果以真实批次和中间报告为准。每阶段阅读顺序为指南 → 实验 → 独立作答 → 按需提示 → 评分；阶段提交映射在最终交付报告中记录，正式标签仍等待真人数据终审。
+
+教程的固定来源、输入输出和具体函数映射见[教程工程映射](../docs/教程工程映射.md)；阶段提交和实际课程验收见[课程中间报告](../docs/reports/2026-10-15-课程与验收中间报告.md)。三、四阶段共享知识单元提交，不伪造独立开发历史。
 
 ## AI 三轮辅导
 

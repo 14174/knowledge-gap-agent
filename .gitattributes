@@ -1,3 +1,3 @@
 # 数据与实验摘要绑定原始字节，禁止按平台自动替换换行。
 fixtures/** -text
-artifacts/** -text
+artifacts/** -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

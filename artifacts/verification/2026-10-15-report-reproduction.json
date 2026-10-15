@@ -1,0 +1,1 @@
+{"copy_mode":"同盘只读硬链接副本；不修改任何批次文件","http_attempts_unchanged":2085,"network_forbidden":true,"old_absolute_manifest_read_forbidden":true,"pre_post_report_identical":true,"relocated_report_identical":true,"report_sha256":"e1c96f2573fe004713d7129ec287aa8186c80dfc6a7269d5df2a994ce7c565ec","temporary_directory_cleanup_passed":true,"tested_platform":"Windows；未执行Linux整机验收"}

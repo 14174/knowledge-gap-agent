@@ -1,0 +1,48 @@
+{"answer_key":["规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。","会改变实验输入、边界或随机性的冻结变量都必须进入 config_hash。"],"case_id":"case-f504beb5a2a806ba","category":"local_sufficient","need_research":false,"topic":1}
+{"answer_key":["规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。","会改变实验输入、边界或随机性的冻结变量都必须进入 config_hash。"],"case_id":"case-33f3c53a56b13efc","category":"local_partial","need_research":true,"topic":1}
+{"answer_key":["规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。","会改变实验输入、边界或随机性的冻结变量都必须进入 config_hash。"],"case_id":"case-de9684be026811f1","category":"outdated","need_research":true,"topic":1}
+{"answer_key":["规范 JSON 必须按映射键排序、使用 UTF-8，并拒绝非有限数值。","会改变实验输入、边界或随机性的冻结变量都必须进入 config_hash。"],"case_id":"case-528fb5963f28ff2c","category":"conflict","need_research":true,"topic":1}
+{"answer_key":["冻结模型的集合字段在 Python 内部使用 tuple，JSON 持久化仍输出数组。","冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。"],"case_id":"case-afd7e0cfe5fb1afb","category":"local_sufficient","need_research":false,"topic":2}
+{"answer_key":["冻结模型的集合字段在 Python 内部使用 tuple，JSON 持久化仍输出数组。","冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。"],"case_id":"case-644c0347472ace97","category":"local_partial","need_research":true,"topic":2}
+{"answer_key":["冻结模型的集合字段在 Python 内部使用 tuple，JSON 持久化仍输出数组。","冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。"],"case_id":"case-264f4a2113be6ba0","category":"outdated","need_research":true,"topic":2}
+{"answer_key":["冻结模型的集合字段在 Python 内部使用 tuple，JSON 持久化仍输出数组。","冻结模型的集合字段应使用 tuple，而不是不可变 list 子类；后者可被基类方法绕过，并破坏深复制和 Pickle。"],"case_id":"case-7fd2c5ab217bd713","category":"conflict","need_research":true,"topic":2}
+{"answer_key":["每个新增行为先写目标测试并观察它因功能缺失而失败，再写最小实现。","已发现的实际缺陷应由回归测试固定其复现边界。"],"case_id":"case-4986f92c63dc9e3d","category":"local_sufficient","need_research":false,"topic":3}
+{"answer_key":["每个新增行为先写目标测试并观察它因功能缺失而失败，再写最小实现。","已发现的实际缺陷应由回归测试固定其复现边界。"],"case_id":"case-de6f91a070940d6e","category":"local_partial","need_research":true,"topic":3}
+{"answer_key":["每个新增行为先写目标测试并观察它因功能缺失而失败，再写最小实现。","已发现的实际缺陷应由回归测试固定其复现边界。"],"case_id":"case-322f4058b8d9b6c3","category":"outdated","need_research":true,"topic":3}
+{"answer_key":["每个新增行为先写目标测试并观察它因功能缺失而失败，再写最小实现。","已发现的实际缺陷应由回归测试固定其复现边界。"],"case_id":"case-512f8200ad6ffa1b","category":"conflict","need_research":true,"topic":3}
+{"answer_key":["独立任务先做规格审查，通过后再做代码质量审查。","子任务一次只承担实现、规格审查或质量审查中的一种角色。"],"case_id":"case-b40610a0aa5b2117","category":"local_sufficient","need_research":false,"topic":4}
+{"answer_key":["独立任务先做规格审查，通过后再做代码质量审查。","子任务一次只承担实现、规格审查或质量审查中的一种角色。"],"case_id":"case-6aff4e2c76f7554c","category":"local_partial","need_research":true,"topic":4}
+{"answer_key":["独立任务先做规格审查，通过后再做代码质量审查。","子任务一次只承担实现、规格审查或质量审查中的一种角色。"],"case_id":"case-cdf985c632910ae7","category":"outdated","need_research":true,"topic":4}
+{"answer_key":["独立任务先做规格审查，通过后再做代码质量审查。","子任务一次只承担实现、规格审查或质量审查中的一种角色。"],"case_id":"case-558e862a4f442f0a","category":"conflict","need_research":true,"topic":4}
+{"answer_key":["语料模块负责来源、规范化、切块和证据，不负责检索排名或搜索决策。","新增实现不得复制既有哈希、校验或状态机逻辑，出现重复应先校正上下文。"],"case_id":"case-785deef71d95c1c5","category":"local_sufficient","need_research":false,"topic":5}
+{"answer_key":["语料模块负责来源、规范化、切块和证据，不负责检索排名或搜索决策。","新增实现不得复制既有哈希、校验或状态机逻辑，出现重复应先校正上下文。"],"case_id":"case-aa812184258df096","category":"local_partial","need_research":true,"topic":5}
+{"answer_key":["语料模块负责来源、规范化、切块和证据，不负责检索排名或搜索决策。","新增实现不得复制既有哈希、校验或状态机逻辑，出现重复应先校正上下文。"],"case_id":"case-293cf8defe443c86","category":"outdated","need_research":true,"topic":5}
+{"answer_key":["语料模块负责来源、规范化、切块和证据，不负责检索排名或搜索决策。","新增实现不得复制既有哈希、校验或状态机逻辑，出现重复应先校正上下文。"],"case_id":"case-349c309e1ed138fa","category":"conflict","need_research":true,"topic":5}
+{"answer_key":["Message 的 role 被限制为 user、assistant、system、tool 四种标准角色。","Agent 基类用 Message 列表管理历史，具体调用会组合系统、历史与当前用户消息。"],"case_id":"case-ef5bf2c5691007b1","category":"local_sufficient","need_research":false,"topic":6}
+{"answer_key":["Message 的 role 被限制为 user、assistant、system、tool 四种标准角色。","Agent 基类用 Message 列表管理历史，具体调用会组合系统、历史与当前用户消息。"],"case_id":"case-bdbb530c2141723f","category":"local_partial","need_research":true,"topic":6}
+{"answer_key":["Message 的 role 被限制为 user、assistant、system、tool 四种标准角色。","Agent 基类用 Message 列表管理历史，具体调用会组合系统、历史与当前用户消息。"],"case_id":"case-38fe48e38bd61e41","category":"outdated","need_research":true,"topic":6}
+{"answer_key":["Message 的 role 被限制为 user、assistant、system、tool 四种标准角色。","Agent 基类用 Message 列表管理历史，具体调用会组合系统、历史与当前用户消息。"],"case_id":"case-1e75b0dc4a6affe0","category":"conflict","need_research":true,"topic":6}
+{"answer_key":["工作记忆面向当前会话的临时信息，容量受限并在会话结束后清理。","语义记忆保存抽象概念、规则和知识，可结合图数据库与向量数据库。"],"case_id":"case-e1bb73a44b9fa68c","category":"local_sufficient","need_research":false,"topic":7}
+{"answer_key":["工作记忆面向当前会话的临时信息，容量受限并在会话结束后清理。","语义记忆保存抽象概念、规则和知识，可结合图数据库与向量数据库。"],"case_id":"case-93130399b1666562","category":"local_partial","need_research":true,"topic":7}
+{"answer_key":["工作记忆面向当前会话的临时信息，容量受限并在会话结束后清理。","语义记忆保存抽象概念、规则和知识，可结合图数据库与向量数据库。"],"case_id":"case-475a793b810e43ba","category":"outdated","need_research":true,"topic":7}
+{"answer_key":["工作记忆面向当前会话的临时信息，容量受限并在会话结束后清理。","语义记忆保存抽象概念、规则和知识，可结合图数据库与向量数据库。"],"case_id":"case-3827427719baf4a6","category":"conflict","need_research":true,"topic":7}
+{"answer_key":["RAG 数据准备包含数据提取、文本分割和向量化，应用阶段检索后注入提示词再生成答案。","异构文档可先转换为 Markdown，再按结构分块、向量化并进入存储检索。"],"case_id":"case-42caaf49a65abdc0","category":"local_sufficient","need_research":false,"topic":8}
+{"answer_key":["RAG 数据准备包含数据提取、文本分割和向量化，应用阶段检索后注入提示词再生成答案。","异构文档可先转换为 Markdown，再按结构分块、向量化并进入存储检索。"],"case_id":"case-7691ad2444757f71","category":"local_partial","need_research":true,"topic":8}
+{"answer_key":["RAG 数据准备包含数据提取、文本分割和向量化，应用阶段检索后注入提示词再生成答案。","异构文档可先转换为 Markdown，再按结构分块、向量化并进入存储检索。"],"case_id":"case-2a7053b2297128ee","category":"outdated","need_research":true,"topic":8}
+{"answer_key":["RAG 数据准备包含数据提取、文本分割和向量化，应用阶段检索后注入提示词再生成答案。","异构文档可先转换为 Markdown，再按结构分块、向量化并进入存储检索。"],"case_id":"case-a3fa760ae9f821fb","category":"conflict","need_research":true,"topic":8}
+{"answer_key":["知识缺口实验至少定义任务成功率、Precision、Recall、F1 和错误充分率。","不同智能体任务需要不同评估方法，工具调用与问答不能只用同一简单对错标准。"],"case_id":"case-217e6759a7f07b59","category":"local_sufficient","need_research":false,"topic":9}
+{"answer_key":["知识缺口实验至少定义任务成功率、Precision、Recall、F1 和错误充分率。","不同智能体任务需要不同评估方法，工具调用与问答不能只用同一简单对错标准。"],"case_id":"case-89c7cf66fe53d7eb","category":"local_partial","need_research":true,"topic":9}
+{"answer_key":["知识缺口实验至少定义任务成功率、Precision、Recall、F1 和错误充分率。","不同智能体任务需要不同评估方法，工具调用与问答不能只用同一简单对错标准。"],"case_id":"case-5ea5f77c65ebbb1c","category":"outdated","need_research":true,"topic":9}
+{"answer_key":["知识缺口实验至少定义任务成功率、Precision、Recall、F1 和错误充分率。","不同智能体任务需要不同评估方法，工具调用与问答不能只用同一简单对错标准。"],"case_id":"case-1554c8839e94522b","category":"conflict","need_research":true,"topic":9}
+{"answer_key":["runtime、labels、audit 必须物理分离，运行载荷按字段白名单构造。","正式冻结必须重新计算人工门禁，不信任调用方手填的状态字段。"],"case_id":"case-ac556329fd76a669","category":"local_sufficient","need_research":false,"topic":10}
+{"answer_key":["runtime、labels、audit 必须物理分离，运行载荷按字段白名单构造。","正式冻结必须重新计算人工门禁，不信任调用方手填的状态字段。"],"case_id":"case-5c70d2874716fde9","category":"local_partial","need_research":true,"topic":10}
+{"answer_key":["runtime、labels、audit 必须物理分离，运行载荷按字段白名单构造。","正式冻结必须重新计算人工门禁，不信任调用方手填的状态字段。"],"case_id":"case-fd5a47c626d4d050","category":"outdated","need_research":true,"topic":10}
+{"answer_key":["runtime、labels、audit 必须物理分离，运行载荷按字段白名单构造。","正式冻结必须重新计算人工门禁，不信任调用方手填的状态字段。"],"case_id":"case-e06e7def3bf46946","category":"conflict","need_research":true,"topic":10}
+{"answer_key":["面向项目的学习者应按 Project Ladder 逐档完成可运行作品。","评估阶段应使用固定测试集，并记录成功率、失败原因、工具调用次数、成本和延迟。"],"case_id":"case-95f754c19c31270d","category":"local_sufficient","need_research":false,"topic":11}
+{"answer_key":["面向项目的学习者应按 Project Ladder 逐档完成可运行作品。","评估阶段应使用固定测试集，并记录成功率、失败原因、工具调用次数、成本和延迟。"],"case_id":"case-9c55a6cf04bbbf27","category":"local_partial","need_research":true,"topic":11}
+{"answer_key":["面向项目的学习者应按 Project Ladder 逐档完成可运行作品。","评估阶段应使用固定测试集，并记录成功率、失败原因、工具调用次数、成本和延迟。"],"case_id":"case-d7a0eca34f41b3b6","category":"outdated","need_research":true,"topic":11}
+{"answer_key":["面向项目的学习者应按 Project Ladder 逐档完成可运行作品。","评估阶段应使用固定测试集，并记录成功率、失败原因、工具调用次数、成本和延迟。"],"case_id":"case-efdabcf6d41a198b","category":"conflict","need_research":true,"topic":11}
+{"answer_key":["过时、冲突、低置信度、被退回或曾规则失败的样本必须进入人工审核。","自动化评估可能遗漏严格推理或主观质量问题，人工验证仍是最终质量把关环节。"],"case_id":"case-f8dd3bf80f8929bb","category":"local_sufficient","need_research":false,"topic":12}
+{"answer_key":["过时、冲突、低置信度、被退回或曾规则失败的样本必须进入人工审核。","自动化评估可能遗漏严格推理或主观质量问题，人工验证仍是最终质量把关环节。"],"case_id":"case-4e735573c00d39b3","category":"local_partial","need_research":true,"topic":12}
+{"answer_key":["过时、冲突、低置信度、被退回或曾规则失败的样本必须进入人工审核。","自动化评估可能遗漏严格推理或主观质量问题，人工验证仍是最终质量把关环节。"],"case_id":"case-ee34cabcbdf85b71","category":"outdated","need_research":true,"topic":12}
+{"answer_key":["过时、冲突、低置信度、被退回或曾规则失败的样本必须进入人工审核。","自动化评估可能遗漏严格推理或主观质量问题，人工验证仍是最终质量把关环节。"],"case_id":"case-1cb754bde4520ad0","category":"conflict","need_research":true,"topic":12}
